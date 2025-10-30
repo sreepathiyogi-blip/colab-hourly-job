@@ -14,7 +14,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # Step 2: Set up Python environment
+      # Step 2: Set up Python
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -24,20 +24,22 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          # Install core libraries commonly used in Colab exports
+          # Core libraries for your script
           pip install pandas numpy requests IPython jupyter
-          # If you have a requirements.txt, install from there too
+          # Google Sheets + Auth
+          pip install gspread gspread_dataframe google-auth google-auth-oauthlib google-auth-httplib2
+          # If you maintain a requirements.txt, install from there as well
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      # Step 4: Run your Python script
+      # Step 4: Run your Meta Ads Reporter script
       - name: Run meta_ads_reporter.py
         run: |
           echo "===== Starting Script Execution ====="
           python meta_ads_reporter.py
           echo "===== Script Completed Successfully ====="
 
-      # Step 5 (Optional): Save any logs/output files to repo
-      # Uncomment this section if your script writes CSVs, JSONs, or logs
+      # Step 5 (Optional): Save logs or output back to repo
+      # Uncomment if your script writes CSVs or logs you want to retain
       # - name: Commit and push output files
       #   run: |
       #     git config user.name "github-actions[bot]"
