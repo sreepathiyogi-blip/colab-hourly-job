@@ -2,9 +2,10 @@ name: Run meta_ads_reporter hourly
 
 on:
   schedule:
-    # Runs every hour at minute 0 (UTC time)
-    # Examples: 00:00, 01:00, 02:00, 03:00, etc.
-    - cron: "0 * * * *"
+    # Runs every hour at minute 10 (UTC time)
+    # This gives a 10-minute buffer to capture hourly data
+    # Examples: 00:10, 01:10, 02:10, 03:10, etc.
+    - cron: "10 * * * *"
   
   workflow_dispatch:  # Allows manual trigger from Actions tab
 
