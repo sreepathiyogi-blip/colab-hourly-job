@@ -1,4 +1,3 @@
-import sys
 import os
 import requests
 import pandas as pd
@@ -69,12 +68,6 @@ DROP_THRESHOLD = 0.10
 
 sheets_client = None
 sheet = None
-
-def get_current_hour_timestamp():
-    """Get timestamp for the current hour (rounded down to the hour)"""
-    now = datetime.now(IST)
-    current_hour = now.replace(minute=0, second=0, microsecond=0)
-    return current_hour.strftime('%Y-%m-%d %H:00:00')
 
 def log(message):
     timestamp = datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')
@@ -326,7 +319,7 @@ def update_google_sheet(df):
 
 def run_report(timestamp=None):
     if timestamp is None:
-        timestamp = get_current_hour_timestamp()
+        timestamp = datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')
     log(f"🚀 Starting report run for cumulative data up to {timestamp}...")
     
     if not validate_token():
@@ -362,7 +355,8 @@ def main():
     log("=" * 60)
     
     if setup_google_sheets():
-        success = run_report()
+        current_time = datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')
+        success = run_report(current_time)
         
         log("=" * 60)
         if success:
@@ -375,4 +369,3 @@ def main():
         sys.exit(1)
 
 if __name__ == "__main__":
-    main()
