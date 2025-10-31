@@ -62,7 +62,7 @@ else:
 ACCESS_TOKEN = os.environ.get('META_ACCESS_TOKEN', "EAAHeR1E5PKUBP19I9GXYVw8kWusULp7l7ZBbyHf1qZCzBdPZA7enpZAbLZBQGajtASZCJWbesZCthHzV0K8xd2KfDKYZBRZAGjbMDtOZCmlX3jlRpMQUlAp8OedkqBD12rr35FnL4InZCrqhfV3fPTVACozb5YWZC7KmXZBgRabEbE1rwuKnZBJwsHYn0oOPtyZBm504dFJgE1ZA3KTw")
 AD_ACCOUNT_IDS = ["act_1820431671907314", "act_24539675529051798"]
 API_VERSION = "v21.0"
-SPREADSHEET_ID = os.environ.get('SPREADSHEET_ID', "1Ka_DkNGCVi2h_plNN55-ZETW7M9MmFpTHocE7LZcYEM")
+SPREADSHEET_ID = os.environ.get('SPREADSHEET_ID', "YOUR_SPREADSHEET_ID_HERE")
 WORKSHEET_NAME = "Facebook Campaign Data"
 IST = timezone(timedelta(hours=5, minutes=30))
 DROP_THRESHOLD = 0.10
@@ -79,6 +79,8 @@ def setup_google_sheets():
     try:
         if IN_COLAB:
             log("🔐 Authenticating with Google Colab...")
+            from google.colab import auth
+            from google.auth import default
             auth.authenticate_user()
             creds, _ = default()
             sheets_client = gspread.authorize(creds)
@@ -86,21 +88,14 @@ def setup_google_sheets():
         else:
             log("🔐 Authenticating with Service Account...")
             creds_file = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS', 'service-account.json')
-            
             if not os.path.exists(creds_file):
                 log(f"❌ Credentials file not found: {creds_file}")
                 return False
-            
             scopes = [
                 'https://www.googleapis.com/auth/spreadsheets',
                 'https://www.googleapis.com/auth/drive'
             ]
-            
-            creds = service_account.Credentials.from_service_account_file(
-                creds_file,
-                scopes=scopes
-            )
-            
+            creds = service_account.Credentials.from_service_account_file(creds_file, scopes=scopes)
             sheets_client = gspread.authorize(creds)
             log("✅ Successfully authenticated with Service Account")
         
@@ -188,14 +183,24 @@ def test_ad_account(account_id):
         return False
 
 def fetch_meta_data():
-    log(f"📊 Fetching cumulative Meta Ads data for today...")
+    log(f"📊 Fetching hourly Meta Ads data for previous hour...")
     all_data = []
+    now_utc = datetime.utcnow()
+    start_of_hour = (now_utc - timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
+    end_of_hour = now_utc.replace(minute=0, second=0, microsecond=0)
+    
+    time_range = {
+        "since": start_of_hour.strftime("%Y-%m-%dT%H:%M:%S"),
+        "until": end_of_hour.strftime("%Y-%m-%dT%H:%M:%S")
+    }
+    time_range_str = str(time_range).replace("'", '"')  # Meta API needs double quotes
+    
     for account_id in AD_ACCOUNT_IDS:
         insights_url = f"https://graph.facebook.com/{API_VERSION}/{account_id}/insights"
         params = {
             "access_token": ACCESS_TOKEN,
             "fields": "date_start,date_stop,impressions,clicks,spend,actions,action_values,cpm,cpc,ctr",
-            "date_preset": "today",
+            "time_range": time_range_str,
             "level": "account",
             "limit": 50
         }
@@ -210,7 +215,7 @@ def fetch_meta_data():
                 continue
             data = resp_json.get("data", [])
             if not data:
-                log(f"⚠️ No data for account {account_id} today")
+                log(f"⚠️ No data for account {account_id} in the previous hour")
                 continue
             for item in data:
                 item['account_id'] = account_id
@@ -222,7 +227,7 @@ def fetch_meta_data():
             write_error_to_sheet(error_msg)
             continue
     if not all_data:
-        log("⚠️ No data available for any account today")
+        log("⚠️ No data available for any account this hour")
     return all_data
 
 def process_combined_data(all_data, timestamp):
@@ -297,7 +302,7 @@ def process_combined_data(all_data, timestamp):
         "Drop Alert": ""
     }
     df = pd.DataFrame([row])
-    log(f"✅ Processed aggregated DataFrame with combined accounts")
+    log(f"✅ Processed aggregated DataFrame for hour ending {timestamp}")
     return df
 
 def update_google_sheet(df):
@@ -321,29 +326,29 @@ def update_google_sheet(df):
 def run_report(timestamp=None):
     if timestamp is None:
         timestamp = datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')
-    log(f"🚀 Starting report run for cumulative data up to {timestamp}...")
-    
+    log(f"🚀 Starting report run for hourly data ending at {timestamp}...")
+
     if not validate_token():
         log("❌ Report failed: Invalid Meta Ads access token")
         return False
-    
+
     for account_id in AD_ACCOUNT_IDS:
         if not test_ad_account(account_id):
             log(f"❌ Report failed: Invalid ad account {account_id}")
             return False
-    
+
     all_data = fetch_meta_data()
     if not all_data:
         log("⚠️ No data to process")
         return False
-    
+
     df = process_combined_data(all_data, timestamp)
     if df is None or df.empty:
         log("❌ Data processing failed or empty DataFrame")
         return False
-    
+
     if update_google_sheet(df):
-        log(f"✅ Report completed successfully - captured cumulative data up to {timestamp}")
+        log(f"✅ Report completed successfully - appended hourly data ending at {timestamp}")
         return True
     return False
 
@@ -354,11 +359,11 @@ def main():
     log(f"📅 Current time: {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')}")
     log(f"📍 Environment: {'Google Colab' if IN_COLAB else 'GitHub Actions'}")
     log("=" * 60)
-    
+
     if setup_google_sheets():
         current_time = datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')
         success = run_report(current_time)
-        
+
         log("=" * 60)
         if success:
             log("✅ REPORT COMPLETED SUCCESSFULLY!")
