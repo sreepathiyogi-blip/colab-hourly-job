@@ -1,3 +1,4 @@
+import sys
 import os
 import requests
 import pandas as pd
@@ -369,3 +370,5 @@ def main():
         sys.exit(1)
 
 if __name__ == "__main__":
+    main()
+
