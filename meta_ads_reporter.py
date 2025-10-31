@@ -1,66 +1,74 @@
-from IPython.display import display, Javascript
-import time
-from threading import Thread
-
-def keep_colab_alive():
-    display(Javascript('''
-        function KeepAlive(){
-            var timestamp = new Date().toLocaleTimeString();
-            console.log("🔄 Keep-alive ping at: " + timestamp);
-            try {
-                var connectButton = document.querySelector("colab-connect-button");
-                if (connectButton) {
-                    connectButton.shadowRoot.querySelector("#connect").click();
-                }
-            } catch(e) {}
-            document.body.dispatchEvent(new Event('mousemove'));
-            document.body.dispatchEvent(new Event('keypress'));
-        }
-        setInterval(KeepAlive, 60000);
-        console.log("✅ Keep-alive system activated!");
-    '''))
-
-    def background_heartbeat():
-        while True:
-            time.sleep(300)
-            current_time = time.strftime('%Y-%m-%d %H:%M:%S')
-            print(f"💚 Heartbeat: Session active at {current_time}")
-
-    heartbeat_thread = Thread(target=background_heartbeat, daemon=True)
-    heartbeat_thread.start()
-
-    print("=" * 60)
-    print("✅ KEEP-ALIVE SYSTEM ACTIVATED!")
-    print("=" * 60)
-    print("📱 Browser/app must stay open")
-    print("🔌 Keep device plugged in for best results")
-    print("⏰ JavaScript pings every 60 seconds")
-    print("💚 Python heartbeat every 5 minutes")
-    print("=" * 60)
-
-keep_colab_alive()
+import sys
+import os
 import requests
 import pandas as pd
 from datetime import datetime, timedelta, timezone
-import threading
 import time
 import gspread
 from gspread_dataframe import set_with_dataframe
-from google.colab import auth
-from google.auth import default
+
+# Detect environment
+IN_COLAB = 'google.colab' in sys.modules
+
+# Conditional Colab imports and keep-alive
+if IN_COLAB:
+    from IPython.display import display, Javascript
+    from threading import Thread
+    from google.colab import auth
+    from google.auth import default
+    
+    def keep_colab_alive():
+        display(Javascript('''
+            function KeepAlive(){
+                var timestamp = new Date().toLocaleTimeString();
+                console.log("🔄 Keep-alive ping at: " + timestamp);
+                try {
+                    var connectButton = document.querySelector("colab-connect-button");
+                    if (connectButton) {
+                        connectButton.shadowRoot.querySelector("#connect").click();
+                    }
+                } catch(e) {}
+                document.body.dispatchEvent(new Event('mousemove'));
+                document.body.dispatchEvent(new Event('keypress'));
+            }
+            setInterval(KeepAlive, 60000);
+            console.log("✅ Keep-alive system activated!");
+        '''))
+
+        def background_heartbeat():
+            while True:
+                time.sleep(300)
+                current_time = time.strftime('%Y-%m-%d %H:%M:%S')
+                print(f"💚 Heartbeat: Session active at {current_time}")
+
+        heartbeat_thread = Thread(target=background_heartbeat, daemon=True)
+        heartbeat_thread.start()
+
+        print("=" * 60)
+        print("✅ KEEP-ALIVE SYSTEM ACTIVATED!")
+        print("=" * 60)
+        print("📱 Browser/app must stay open")
+        print("🔌 Keep device plugged in for best results")
+        print("⏰ JavaScript pings every 60 seconds")
+        print("💚 Python heartbeat every 5 minutes")
+        print("=" * 60)
+    
+    keep_colab_alive()
+else:
+    # GitHub Actions environment
+    from google.oauth2 import service_account
 
 # CONFIGURATION
-ACCESS_TOKEN = "EAAHeR1E5PKUBP19I9GXYVw8kWusULp7l7ZBbyHf1qZCzBdPZA7enpZAbLZBQGajtASZCJWbesZCthHzV0K8xd2KfDKYZBRZAGjbMDtOZCmlX3jlRpMQUlAp8OedkqBD12rr35FnL4InZCrqhfV3fPTVACozb5YWZC7KmXZBgRabEbE1rwuKnZBJwsHYn0oOPtyZBm504dFJgE1ZA3KTw"
-AD_ACCOUNT_IDS = ["act_1820431671907314", "act_24539675529051798"]  # Both accounts
+ACCESS_TOKEN = os.environ.get('META_ACCESS_TOKEN', "EAAHeR1E5PKUBP19I9GXYVw8kWusULp7l7ZBbyHf1qZCzBdPZA7enpZAbLZBQGajtASZCJWbesZCthHzV0K8xd2KfDKYZBRZAGjbMDtOZCmlX3jlRpMQUlAp8OedkqBD12rr35FnL4InZCrqhfV3fPTVACozb5YWZC7KmXZBgRabEbE1rwuKnZBJwsHYn0oOPtyZBm504dFJgE1ZA3KTw")
+AD_ACCOUNT_IDS = ["act_1820431671907314", "act_24539675529051798"]
 API_VERSION = "v21.0"
-SPREADSHEET_ID = "1Ka_DkNGCVi2h_plNN55-ZETW7M9MmFpTHocE7LZcYEM"
+SPREADSHEET_ID = os.environ.get('SPREADSHEET_ID', "1Ka_DkNGCVi2h_plNN55-ZETW7M9MmFpTHocE7LZcYEM")
 WORKSHEET_NAME = "Facebook Campaign Data"
 IST = timezone(timedelta(hours=5, minutes=30))
-scheduler_running = False
-scheduler_thread = None
+DROP_THRESHOLD = 0.10
+
 sheets_client = None
 sheet = None
-DROP_THRESHOLD = 0.10  # 10%
 
 def log(message):
     timestamp = datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')
@@ -69,33 +77,62 @@ def log(message):
 def setup_google_sheets():
     global sheets_client, sheet
     try:
-        log("🔐 Authenticating with Google Colab...")
-        auth.authenticate_user()
-        creds, _ = default()
-        sheets_client = gspread.authorize(creds)
-        log("✅ Successfully authenticated with Google Colab")
+        if IN_COLAB:
+            log("🔐 Authenticating with Google Colab...")
+            auth.authenticate_user()
+            creds, _ = default()
+            sheets_client = gspread.authorize(creds)
+            log("✅ Successfully authenticated with Google Colab")
+        else:
+            log("🔐 Authenticating with Service Account...")
+            creds_file = os.environ.get('GOOGLE_APPLICATION_CREDENTIALS', 'service-account.json')
+            
+            if not os.path.exists(creds_file):
+                log(f"❌ Credentials file not found: {creds_file}")
+                return False
+            
+            scopes = [
+                'https://www.googleapis.com/auth/spreadsheets',
+                'https://www.googleapis.com/auth/drive'
+            ]
+            
+            creds = service_account.Credentials.from_service_account_file(
+                creds_file,
+                scopes=scopes
+            )
+            
+            sheets_client = gspread.authorize(creds)
+            log("✅ Successfully authenticated with Service Account")
+        
         sheet = sheets_client.open_by_key(SPREADSHEET_ID)
-        log(f"✅ Opened existing sheet with ID: {SPREADSHEET_ID}")
+        log(f"✅ Opened spreadsheet with ID: {SPREADSHEET_ID}")
+        
         worksheets = sheet.worksheets()
         campaign_data_exists = False
+        
         for ws in worksheets:
             if ws.title == WORKSHEET_NAME:
                 campaign_data_exists = True
             elif ws.title != WORKSHEET_NAME:
                 sheet.del_worksheet(ws)
                 log(f"🗑️ Deleted extra worksheet: {ws.title}")
+        
         if not campaign_data_exists:
             worksheet = sheet.add_worksheet(title=WORKSHEET_NAME, rows=10000, cols=21)
             log(f"✅ Created worksheet: {WORKSHEET_NAME}")
         else:
             log(f"✅ Found existing worksheet: {WORKSHEET_NAME}")
+        
         sheet_url = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}"
         log(f"📊 Google Sheet link: {sheet_url}")
-        try:
-            from IPython.display import display, HTML
-            display(HTML(f'<a href="{sheet_url}" target="_blank">🌐 Open Google Sheet</a>'))
-        except:
-            pass
+        
+        if IN_COLAB:
+            try:
+                from IPython.display import display, HTML
+                display(HTML(f'<a href="{sheet_url}" target="_blank">🌐 Open Google Sheet</a>'))
+            except:
+                pass
+        
         return True
     except Exception as e:
         log(f"❌ Google Sheets setup failed: {str(e)}")
@@ -107,7 +144,7 @@ def write_error_to_sheet(error_message):
         existing = worksheet.get_all_values()
         start_row = len(existing) + 1
         error_row = [f"Error at {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')}: {error_message}"]
-        worksheet.update([error_row], f'A{start_row}')
+        worksheet.update(range_name=f'A{start_row}', values=[error_row])
         log(f"✅ Wrote error to sheet: {error_message}")
     except Exception as e:
         log(f"❌ Failed to write error to sheet: {str(e)}")
@@ -257,7 +294,7 @@ def process_combined_data(all_data, timestamp):
         "CI TO ORDERED": f"{ci_to_ordered:.2f}%",
         "CVR": f"{cvr:.2f}%",
         "CPM": round(cpm, 2),
-        "Drop Alert": ""  # Add drop alert logic if needed
+        "Drop Alert": ""
     }
     df = pd.DataFrame([row])
     log(f"✅ Processed aggregated DataFrame with combined accounts")
@@ -285,74 +322,52 @@ def run_report(timestamp=None):
     if timestamp is None:
         timestamp = datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')
     log(f"🚀 Starting report run for cumulative data up to {timestamp}...")
+    
     if not validate_token():
         log("❌ Report failed: Invalid Meta Ads access token")
         return False
+    
     for account_id in AD_ACCOUNT_IDS:
         if not test_ad_account(account_id):
             log(f"❌ Report failed: Invalid ad account {account_id}")
             return False
+    
     all_data = fetch_meta_data()
     if not all_data:
         log("⚠️ No data to process")
         return False
+    
     df = process_combined_data(all_data, timestamp)
     if df is None or df.empty:
         log("❌ Data processing failed or empty DataFrame")
         return False
+    
     if update_google_sheet(df):
         log(f"✅ Report completed successfully - captured cumulative data up to {timestamp}")
         return True
     return False
 
-def calculate_next_full_hour():
-    now = datetime.now(IST)
-    next_hour = (now + timedelta(hours=1)).replace(minute=0, second=0, microsecond=0)
-    seconds_until_next = (next_hour - now).total_seconds()
-    return seconds_until_next, next_hour
-
-def scheduler_loop():
-    global scheduler_running
-    while scheduler_running:
-        seconds_until_next, next_hour = calculate_next_full_hour()
-        log(f"⏰ Next run scheduled at {next_hour.strftime('%Y-%m-%d %H:%M:%S')} (in {int(seconds_until_next/60)} minutes)")
-        time.sleep(seconds_until_next)
-        if scheduler_running:
-            timestamp = next_hour.strftime('%Y-%m-%d %H:00:00')
-            run_report(timestamp)
-    log("⏹️ Scheduler stopped")
-
-def start_scheduler():
-    global scheduler_running, scheduler_thread
-    if scheduler_running:
-        log("⚠️ Scheduler already running")
-        return
-    scheduler_running = True
-    scheduler_thread = threading.Thread(target=scheduler_loop, daemon=True)
-    scheduler_thread.start()
-    log("✅ Scheduler started - will run at exact full hours only")
-
-def stop_scheduler():
-    global scheduler_running
-    scheduler_running = False
-    log("⏹️ Scheduler stopping...")
-
-log("=" * 60)
-log("🎯 STARTING META ADS HOURLY REPORTER (COMBINED ACCOUNTS)")
-log("=" * 60)
-log(f"📅 Current time: {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')}")
-log("🔄 Keep-alive system should be active from Cell 1")
-log("=" * 60)
-
-if setup_google_sheets():
-    current_time = datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')
-    run_report(current_time)
-    start_scheduler()
+def main():
     log("=" * 60)
-    log("✅ ALL SYSTEMS RUNNING!")
-    log("💚 Keep-alive pinging every 60 seconds")
-    log("⏰ Hourly reports at full hours (18:00, 19:00, etc.)")
-    log("📱 Keep browser/app open and device plugged in")
+    log("🎯 STARTING META ADS HOURLY REPORTER")
     log("=" * 60)
-else:
-    log("❌ Failed to start: Google Sheets setup failed")
+    log(f"📅 Current time: {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')}")
+    log(f"📍 Environment: {'Google Colab' if IN_COLAB else 'GitHub Actions'}")
+    log("=" * 60)
+    
+    if setup_google_sheets():
+        current_time = datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')
+        success = run_report(current_time)
+        
+        log("=" * 60)
+        if success:
+            log("✅ REPORT COMPLETED SUCCESSFULLY!")
+        else:
+            log("⚠️ REPORT COMPLETED WITH WARNINGS")
+        log("=" * 60)
+    else:
+        log("❌ Failed to start: Google Sheets setup failed")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
