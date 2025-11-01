@@ -65,7 +65,6 @@ API_VERSION = "v21.0"
 SPREADSHEET_ID = os.environ.get('SPREADSHEET_ID', "1Ka_DkNGCVi2h_plNN55-ZETW7M9MmFpTHocE7LZcYEM")
 WORKSHEET_NAME = "Facebook Campaign Data"
 IST = timezone(timedelta(hours=5, minutes=30))
-DROP_THRESHOLD = 0.30  # 30% drop threshold for alerts
 
 sheets_client = None
 sheet = None
@@ -118,7 +117,7 @@ def setup_google_sheets():
                 log(f"🗑️ Deleted extra worksheet: {ws.title}")
         
         if not campaign_data_exists:
-            worksheet = sheet.add_worksheet(title=WORKSHEET_NAME, rows=10000, cols=22)
+            worksheet = sheet.add_worksheet(title=WORKSHEET_NAME, rows=10000, cols=20)
             log(f"✅ Created worksheet: {WORKSHEET_NAME}")
         else:
             log(f"✅ Found existing worksheet: {WORKSHEET_NAME}")
@@ -363,14 +362,12 @@ def process_combined_data(all_data, timestamp):
     cvr = (purchases / link_clicks * 100) if link_clicks > 0 else 0
 
     date = datetime.now(IST).strftime('%Y-%m-%d')
-    hour = datetime.now(IST).strftime('%H:00')
     
     row = {
         "Date": date,
-        "Hour": hour,
         "Timestamp": timestamp,
-        "Spend": round(spend, 2),
-        "Purchases Value": round(purchases_value, 2),
+        "Spend": f"₹{spend:,.0f}",
+        "Purchases Value": f"₹{purchases_value:,.0f}",
         "Purchases": purchases,
         "Impressions": impressions,
         "Link Clicks": link_clicks,
@@ -378,21 +375,15 @@ def process_combined_data(all_data, timestamp):
         "Add to Cart": add_to_cart,
         "Initiate Checkout": initiate_checkout,
         "ROAS": round(roas, 2),
-        "CPC": round(cpc, 2),
+        "CPC": f"₹{cpc:.2f}",
         "CTR": f"{ctr:.2f}%",
         "LC TO LPV": f"{lc_to_lpv:.2f}%",
         "LPV TO ATC": f"{lpv_to_atc:.2f}%",
         "ATC TO CI": f"{atc_to_ci:.2f}%",
         "CI TO ORDERED": f"{ci_to_ordered:.2f}%",
         "CVR": f"{cvr:.2f}%",
-        "CPM": round(cpm, 2),
-        "Drop Alert": ""  # Will be filled after comparison
+        "CPM": f"₹{cpm:.2f}"
     }
-    
-    # Get previous hour data and detect drops
-    previous_data = get_previous_hour_data()
-    if previous_data:
-        row["Drop Alert"] = detect_drops(row, previous_data)
     
     df = pd.DataFrame([row])
     
@@ -400,7 +391,7 @@ def process_combined_data(all_data, timestamp):
     log("=" * 60)
     log("📊 HOURLY DATA SUMMARY")
     log("=" * 60)
-    log(f"🕐 Hour: {hour}")
+    log(f"🕐 Time: {timestamp}")
     log(f"📈 Impressions: {impressions:,}")
     log(f"👆 Link Clicks: {link_clicks:,}")
     log(f"💰 Spend: ₹{spend:,.2f}")
@@ -409,12 +400,6 @@ def process_combined_data(all_data, timestamp):
     log(f"📊 ROAS: {roas:.2f}")
     log(f"📉 CTR: {ctr:.2f}%")
     log(f"🔄 CVR: {cvr:.2f}%")
-    
-    if row["Drop Alert"]:
-        log(f"🚨 ALERTS: {row['Drop Alert']}")
-    else:
-        log("✅ No significant drops detected")
-    
     log("=" * 60)
     
     return df
@@ -434,18 +419,11 @@ def update_google_sheet(df):
         
         # Format header if it's the first row
         if start_row == 1:
-            worksheet.format('A1:V1', {
+            worksheet.format('A1:T1', {
                 'textFormat': {'bold': True, 'fontSize': 11},
                 'backgroundColor': {'red': 0.2, 'green': 0.2, 'blue': 0.2},
                 'textFormat': {'foregroundColor': {'red': 1, 'green': 1, 'blue': 1}},
                 'horizontalAlignment': 'CENTER'
-            })
-        
-        # Highlight drop alerts in red
-        if df['Drop Alert'].iloc[0]:
-            worksheet.format(f'V{start_row}', {
-                'backgroundColor': {'red': 1, 'green': 0.8, 'blue': 0.8},
-                'textFormat': {'bold': True, 'foregroundColor': {'red': 0.8, 'green': 0, 'blue': 0}}
             })
         
         return True
