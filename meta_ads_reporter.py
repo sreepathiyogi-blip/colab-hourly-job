@@ -65,6 +65,7 @@ API_VERSION = "v21.0"
 SPREADSHEET_ID = os.environ.get('SPREADSHEET_ID', "1Ka_DkNGCVi2h_plNN55-ZETW7M9MmFpTHocE7LZcYEM")
 WORKSHEET_NAME = "Facebook Campaign Data"
 IST = timezone(timedelta(hours=5, minutes=30))
+DROP_THRESHOLD = 0.20  # 20% drop threshold for alerts
 
 sheets_client = None
 sheet = None
@@ -117,7 +118,7 @@ def setup_google_sheets():
                 log(f"🗑️ Deleted extra worksheet: {ws.title}")
         
         if not campaign_data_exists:
-            worksheet = sheet.add_worksheet(title=WORKSHEET_NAME, rows=10000, cols=20)
+            worksheet = sheet.add_worksheet(title=WORKSHEET_NAME, rows=10000, cols=25)
             log(f"✅ Created worksheet: {WORKSHEET_NAME}")
         else:
             log(f"✅ Found existing worksheet: {WORKSHEET_NAME}")
@@ -197,7 +198,8 @@ def fetch_meta_data():
             "fields": "date_start,date_stop,impressions,clicks,spend,actions,action_values,cpm,cpc,ctr",
             "date_preset": "today",
             "level": "account",
-            "limit": 50
+            "limit": 50,
+            "action_attribution_windows": ["1d_click", "7d_click", "1d_view"]
         }
         try:
             time.sleep(2)
@@ -284,8 +286,9 @@ def detect_drops(current_row, previous_data):
     
     # Check Spend drop
     try:
-        current_spend = float(current_row.get("Spend", 0))
-        previous_spend = float(previous_data.get("Spend", 0))
+        # Remove ₹ symbol and commas for comparison
+        current_spend = float(str(current_row.get("Spend", "0")).replace("₹", "").replace(",", ""))
+        previous_spend = float(str(previous_data.get("Spend", "0")).replace("₹", "").replace(",", ""))
         
         if previous_spend > 0:
             drop_pct = ((previous_spend - current_spend) / previous_spend)
@@ -363,9 +366,16 @@ def process_combined_data(all_data, timestamp):
 
     date = datetime.now(IST).strftime('%Y-%m-%d')
     
+    # Generate timestamps
+    ist_now = pd.Timestamp.now(tz='Asia/Kolkata')
+    utc_now = pd.Timestamp.now(tz='UTC')
+    
     row = {
         "Date": date,
         "Timestamp": timestamp,
+        "Data Pulled (IST)": ist_now.strftime('%Y-%m-%d %H:%M:%S %Z'),
+        "Data Pulled (UTC)": utc_now.strftime('%Y-%m-%d %H:%M:%S %Z'),
+        "Attribution": "1d_click,7d_click,1d_view",
         "Spend": f"₹{spend:,.0f}",
         "Purchases Value": f"₹{purchases_value:,.0f}",
         "Purchases": purchases,
@@ -385,13 +395,20 @@ def process_combined_data(all_data, timestamp):
         "CPM": f"₹{cpm:.2f}"
     }
     
+    # Get previous hour data for drop detection
+    previous_data = get_previous_hour_data()
+    alert = detect_drops(row, previous_data)
+    row["Alert"] = alert
+    
     df = pd.DataFrame([row])
     
     # Print summary
     log("=" * 60)
     log("📊 HOURLY DATA SUMMARY")
     log("=" * 60)
-    log(f"🕐 Time: {timestamp}")
+    log(f"🕐 Timestamp: {timestamp}")
+    log(f"🕐 Data Pulled (IST): {ist_now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    log(f"🕐 Data Pulled (UTC): {utc_now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
     log(f"📈 Impressions: {impressions:,}")
     log(f"👆 Link Clicks: {link_clicks:,}")
     log(f"💰 Spend: ₹{spend:,.2f}")
@@ -400,6 +417,8 @@ def process_combined_data(all_data, timestamp):
     log(f"📊 ROAS: {roas:.2f}")
     log(f"📉 CTR: {ctr:.2f}%")
     log(f"🔄 CVR: {cvr:.2f}%")
+    if alert:
+        log(f"🚨 ALERTS: {alert}")
     log("=" * 60)
     
     return df
@@ -419,11 +438,20 @@ def update_google_sheet(df):
         
         # Format header if it's the first row
         if start_row == 1:
-            worksheet.format('A1:T1', {
+            worksheet.format('A1:Y1', {
                 'textFormat': {'bold': True, 'fontSize': 11},
                 'backgroundColor': {'red': 0.2, 'green': 0.2, 'blue': 0.2},
                 'textFormat': {'foregroundColor': {'red': 1, 'green': 1, 'blue': 1}},
                 'horizontalAlignment': 'CENTER'
+            })
+        
+        # Highlight alert cells in red if there are alerts
+        if start_row > 1 and df.iloc[0]['Alert']:
+            alert_col = list(df.columns).index('Alert') + 1
+            alert_col_letter = chr(64 + alert_col)  # Convert to letter (A, B, C, etc.)
+            worksheet.format(f'{alert_col_letter}{start_row}', {
+                'backgroundColor': {'red': 1, 'green': 0.8, 'blue': 0.8},
+                'textFormat': {'bold': True, 'foregroundColor': {'red': 0.8, 'green': 0, 'blue': 0}}
             })
         
         return True
@@ -471,6 +499,7 @@ def main():
     log(f"🕐 Time: {datetime.now(IST).strftime('%H:%M:%S IST')}")
     log(f"📍 Environment: {'Google Colab' if IN_COLAB else 'GitHub Actions'}")
     log(f"📊 Accounts: {len(AD_ACCOUNT_IDS)}")
+    log(f"🔔 Drop Alert Threshold: {DROP_THRESHOLD*100:.0f}%")
     log("=" * 80)
     
     if setup_google_sheets():
