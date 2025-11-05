@@ -118,7 +118,7 @@ def setup_google_sheets():
                 log(f"🗑️ Deleted extra worksheet: {ws.title}")
         
         if not campaign_data_exists:
-            worksheet = sheet.add_worksheet(title=WORKSHEET_NAME, rows=10000, cols=25)
+            worksheet = sheet.add_worksheet(title=WORKSHEET_NAME, rows=10000, cols=20)
             log(f"✅ Created worksheet: {WORKSHEET_NAME}")
         else:
             log(f"✅ Found existing worksheet: {WORKSHEET_NAME}")
@@ -373,9 +373,6 @@ def process_combined_data(all_data, timestamp):
     row = {
         "Date": date,
         "Timestamp": timestamp,
-        "Data Pulled (IST)": ist_now.strftime('%Y-%m-%d %H:%M:%S %Z'),
-        "Data Pulled (UTC)": utc_now.strftime('%Y-%m-%d %H:%M:%S %Z'),
-        "Attribution": "1d_click,7d_click,1d_view",
         "Spend": f"₹{spend:,.0f}",
         "Purchases Value": f"₹{purchases_value:,.0f}",
         "Purchases": purchases,
@@ -395,11 +392,6 @@ def process_combined_data(all_data, timestamp):
         "CPM": f"₹{cpm:.2f}"
     }
     
-    # Get previous hour data for drop detection
-    previous_data = get_previous_hour_data()
-    alert = detect_drops(row, previous_data)
-    row["Alert"] = alert
-    
     df = pd.DataFrame([row])
     
     # Print summary
@@ -407,8 +399,6 @@ def process_combined_data(all_data, timestamp):
     log("📊 HOURLY DATA SUMMARY")
     log("=" * 60)
     log(f"🕐 Timestamp: {timestamp}")
-    log(f"🕐 Data Pulled (IST): {ist_now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
-    log(f"🕐 Data Pulled (UTC): {utc_now.strftime('%Y-%m-%d %H:%M:%S %Z')}")
     log(f"📈 Impressions: {impressions:,}")
     log(f"👆 Link Clicks: {link_clicks:,}")
     log(f"💰 Spend: ₹{spend:,.2f}")
@@ -417,8 +407,6 @@ def process_combined_data(all_data, timestamp):
     log(f"📊 ROAS: {roas:.2f}")
     log(f"📉 CTR: {ctr:.2f}%")
     log(f"🔄 CVR: {cvr:.2f}%")
-    if alert:
-        log(f"🚨 ALERTS: {alert}")
     log("=" * 60)
     
     return df
@@ -438,20 +426,11 @@ def update_google_sheet(df):
         
         # Format header if it's the first row
         if start_row == 1:
-            worksheet.format('A1:Y1', {
+            worksheet.format('A1:T1', {
                 'textFormat': {'bold': True, 'fontSize': 11},
                 'backgroundColor': {'red': 0.2, 'green': 0.2, 'blue': 0.2},
                 'textFormat': {'foregroundColor': {'red': 1, 'green': 1, 'blue': 1}},
                 'horizontalAlignment': 'CENTER'
-            })
-        
-        # Highlight alert cells in red if there are alerts
-        if start_row > 1 and df.iloc[0]['Alert']:
-            alert_col = list(df.columns).index('Alert') + 1
-            alert_col_letter = chr(64 + alert_col)  # Convert to letter (A, B, C, etc.)
-            worksheet.format(f'{alert_col_letter}{start_row}', {
-                'backgroundColor': {'red': 1, 'green': 0.8, 'blue': 0.8},
-                'textFormat': {'bold': True, 'foregroundColor': {'red': 0.8, 'green': 0, 'blue': 0}}
             })
         
         return True
@@ -499,7 +478,6 @@ def main():
     log(f"🕐 Time: {datetime.now(IST).strftime('%H:%M:%S IST')}")
     log(f"📍 Environment: {'Google Colab' if IN_COLAB else 'GitHub Actions'}")
     log(f"📊 Accounts: {len(AD_ACCOUNT_IDS)}")
-    log(f"🔔 Drop Alert Threshold: {DROP_THRESHOLD*100:.0f}%")
     log("=" * 80)
     
     if setup_google_sheets():
