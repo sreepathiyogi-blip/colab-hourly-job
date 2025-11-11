@@ -344,7 +344,8 @@ def process_combined_data(all_data, timestamp):
                     add_to_cart += aval
                 elif atype == "initiate_checkout":
                     initiate_checkout += aval
-                elif atype == "purchase" or atype == "offsite_conversion.fb_pixel_purchase":
+                # FIXED: Only count offsite_conversion.fb_pixel_purchase (standard Meta tracking)
+                elif atype == "offsite_conversion.fb_pixel_purchase":
                     purchases += aval
 
         if "action_values" in item and item["action_values"]:
@@ -354,6 +355,7 @@ def process_combined_data(all_data, timestamp):
                 if atype == "offsite_conversion.fb_pixel_purchase":
                     purchases_value += aval
 
+    # Calculate metrics
     roas = purchases_value / spend if spend > 0 else 0
     cpc = spend / clicks if clicks > 0 else 0
     cpm = (spend / impressions * 1000) if impressions > 0 else 0
@@ -365,10 +367,6 @@ def process_combined_data(all_data, timestamp):
     cvr = (purchases / link_clicks * 100) if link_clicks > 0 else 0
 
     date = datetime.now(IST).strftime('%Y-%m-%d')
-    
-    # Generate timestamps
-    ist_now = pd.Timestamp.now(tz='Asia/Kolkata')
-    utc_now = pd.Timestamp.now(tz='UTC')
     
     row = {
         "Date": date,
@@ -394,19 +392,28 @@ def process_combined_data(all_data, timestamp):
     
     df = pd.DataFrame([row])
     
-    # Print summary
+    # Print summary with detailed funnel
     log("=" * 60)
     log("📊 HOURLY DATA SUMMARY")
     log("=" * 60)
     log(f"🕐 Timestamp: {timestamp}")
     log(f"📈 Impressions: {impressions:,}")
     log(f"👆 Link Clicks: {link_clicks:,}")
-    log(f"💰 Spend: ₹{spend:,.2f}")
+    log(f"👁️  Landing Page Views: {landing_page_views:,}")
+    log(f"🛒 Add to Cart: {add_to_cart:,}")
+    log(f"💳 Initiate Checkout: {initiate_checkout:,}")
     log(f"🎯 Purchases: {purchases}")
+    log(f"💰 Spend: ₹{spend:,.2f}")
     log(f"💵 Purchases Value: ₹{purchases_value:,.2f}")
-    log(f"📊 ROAS: {roas:.2f}")
-    log(f"📉 CTR: {ctr:.2f}%")
-    log(f"🔄 CVR: {cvr:.2f}%")
+    log("─" * 60)
+    log("📉 CONVERSION FUNNEL:")
+    log(f"   CTR: {ctr:.2f}%")
+    log(f"   LC → LPV: {lc_to_lpv:.2f}%")
+    log(f"   LPV → ATC: {lpv_to_atc:.2f}%")
+    log(f"   ATC → CI: {atc_to_ci:.2f}%")
+    log(f"   CI → ORDERED: {ci_to_ordered:.2f}%")
+    log(f"   Overall CVR: {cvr:.2f}%")
+    log(f"   ROAS: {roas:.2f}")
     log("=" * 60)
     
     return df
