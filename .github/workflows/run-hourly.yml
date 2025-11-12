@@ -1,5 +1,4 @@
 name: Run meta_ads_reporter hourly
-
 on:
   schedule:
     # Runs every hour at minute 0 (UTC time)
@@ -49,12 +48,13 @@ jobs:
           TZ: Asia/Kolkata  # Set timezone for logs
         run: |
           echo "=============================================="
-          echo "🚀 HOURLY UPDATE STARTING"
+          echo "🚀 DAILY SALES TRACKER - HOURLY UPDATE"
           echo "=============================================="
           echo "📅 Current Date: $(date '+%Y-%m-%d')"
           echo "🕐 Current Time (IST): $(TZ=Asia/Kolkata date '+%H:%M:%S %Z')"
           echo "🕐 Current Time (UTC): $(date -u '+%H:%M:%S %Z')"
           echo "📊 Workflow Run: #${{ github.run_number }}"
+          echo "📋 Updating: Hourly Data + Daily Sales Report"
           echo "=============================================="
           echo ""
           
@@ -64,6 +64,7 @@ jobs:
           echo "=============================================="
           echo "✅ HOURLY UPDATE COMPLETED"
           echo "🕐 Finished at (IST): $(TZ=Asia/Kolkata date '+%H:%M:%S %Z')"
+          echo "📊 Check sheets: Hourly Data & Daily Sales Report"
           echo "=============================================="
       
       - name: Cleanup credentials
