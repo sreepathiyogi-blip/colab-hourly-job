@@ -63,9 +63,9 @@ ACCESS_TOKEN = os.environ.get('META_ACCESS_TOKEN', "EAAHeR1E5PKUBP19I9GXYVw8kWus
 AD_ACCOUNT_IDS = ["act_1820431671907314", "act_24539675529051798"]
 API_VERSION = "v21.0"
 SPREADSHEET_ID = os.environ.get('SPREADSHEET_ID', "1Ka_DkNGCVi2h_plNN55-ZETW7M9MmFpTHocE7LZcYEM")
-WORKSHEET_NAME = "Facebook Campaign Data"
+HOURLY_WORKSHEET_NAME = "Hourly Data"
+DAILY_WORKSHEET_NAME = "Daily Sales Report"
 IST = timezone(timedelta(hours=5, minutes=30))
-DROP_THRESHOLD = 0.20  # 20% drop threshold for alerts
 
 sheets_client = None
 sheet = None
@@ -107,21 +107,20 @@ def setup_google_sheets():
         sheet = sheets_client.open_by_key(SPREADSHEET_ID)
         log(f"✅ Opened spreadsheet with ID: {SPREADSHEET_ID}")
         
-        worksheets = sheet.worksheets()
-        campaign_data_exists = False
+        # Check if worksheets exist, create if not
+        try:
+            hourly_ws = sheet.worksheet(HOURLY_WORKSHEET_NAME)
+            log(f"✅ Found existing worksheet: {HOURLY_WORKSHEET_NAME}")
+        except:
+            hourly_ws = sheet.add_worksheet(title=HOURLY_WORKSHEET_NAME, rows=10000, cols=20)
+            log(f"✅ Created worksheet: {HOURLY_WORKSHEET_NAME}")
         
-        for ws in worksheets:
-            if ws.title == WORKSHEET_NAME:
-                campaign_data_exists = True
-            elif ws.title != WORKSHEET_NAME:
-                sheet.del_worksheet(ws)
-                log(f"🗑️ Deleted extra worksheet: {ws.title}")
-        
-        if not campaign_data_exists:
-            worksheet = sheet.add_worksheet(title=WORKSHEET_NAME, rows=10000, cols=20)
-            log(f"✅ Created worksheet: {WORKSHEET_NAME}")
-        else:
-            log(f"✅ Found existing worksheet: {WORKSHEET_NAME}")
+        try:
+            daily_ws = sheet.worksheet(DAILY_WORKSHEET_NAME)
+            log(f"✅ Found existing worksheet: {DAILY_WORKSHEET_NAME}")
+        except:
+            daily_ws = sheet.add_worksheet(title=DAILY_WORKSHEET_NAME, rows=1000, cols=20)
+            log(f"✅ Created worksheet: {DAILY_WORKSHEET_NAME}")
         
         sheet_url = f"https://docs.google.com/spreadsheets/d/{SPREADSHEET_ID}"
         log(f"📊 Google Sheet link: {sheet_url}")
@@ -140,7 +139,7 @@ def setup_google_sheets():
 
 def write_error_to_sheet(error_message):
     try:
-        worksheet = sheet.worksheet(WORKSHEET_NAME)
+        worksheet = sheet.worksheet(HOURLY_WORKSHEET_NAME)
         existing = worksheet.get_all_values()
         start_row = len(existing) + 1
         timestamp = datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')
@@ -227,95 +226,6 @@ def fetch_meta_data():
         log("⚠️ No data available for any account today")
     return all_data
 
-def get_previous_hour_data():
-    """Fetch the last hour's data from sheet for comparison"""
-    try:
-        worksheet = sheet.worksheet(WORKSHEET_NAME)
-        all_data = worksheet.get_all_values()
-        
-        if len(all_data) <= 1:  # Only header or empty
-            return None
-        
-        # Get the last row (previous hour)
-        headers = all_data[0]
-        last_row = all_data[-1]
-        
-        # Convert to dict
-        previous_data = {}
-        for i, header in enumerate(headers):
-            if i < len(last_row):
-                previous_data[header] = last_row[i]
-        
-        log(f"📋 Retrieved previous hour data from row {len(all_data)}")
-        return previous_data
-    
-    except Exception as e:
-        log(f"⚠️ Could not fetch previous hour data: {str(e)}")
-        return None
-
-def detect_drops(current_row, previous_data):
-    """Detect significant drops in key metrics"""
-    if not previous_data:
-        return ""
-    
-    alerts = []
-    
-    # Check Impressions drop
-    try:
-        current_impressions = int(current_row.get("Impressions", 0))
-        previous_impressions = int(previous_data.get("Impressions", 0))
-        
-        if previous_impressions > 0:
-            drop_pct = ((previous_impressions - current_impressions) / previous_impressions)
-            if drop_pct > DROP_THRESHOLD:
-                alerts.append(f"IMPRESSIONS↓{drop_pct*100:.0f}%")
-    except:
-        pass
-    
-    # Check Link Clicks drop
-    try:
-        current_clicks = int(current_row.get("Link Clicks", 0))
-        previous_clicks = int(previous_data.get("Link Clicks", 0))
-        
-        if previous_clicks > 0:
-            drop_pct = ((previous_clicks - current_clicks) / previous_clicks)
-            if drop_pct > DROP_THRESHOLD:
-                alerts.append(f"CLICKS↓{drop_pct*100:.0f}%")
-    except:
-        pass
-    
-    # Check Spend drop
-    try:
-        # Remove ₹ symbol and commas for comparison
-        current_spend = float(str(current_row.get("Spend", "0")).replace("₹", "").replace(",", ""))
-        previous_spend = float(str(previous_data.get("Spend", "0")).replace("₹", "").replace(",", ""))
-        
-        if previous_spend > 0:
-            drop_pct = ((previous_spend - current_spend) / previous_spend)
-            if drop_pct > DROP_THRESHOLD:
-                alerts.append(f"SPEND↓{drop_pct*100:.0f}%")
-    except:
-        pass
-    
-    # Check ROAS drop
-    try:
-        current_roas = float(current_row.get("ROAS", 0))
-        previous_roas = float(previous_data.get("ROAS", 0))
-        
-        if previous_roas > 0:
-            drop_pct = ((previous_roas - current_roas) / previous_roas)
-            if drop_pct > DROP_THRESHOLD:
-                alerts.append(f"ROAS↓{drop_pct*100:.0f}%")
-    except:
-        pass
-    
-    if alerts:
-        alert_str = " | ".join(alerts)
-        log(f"🚨 DROP ALERT: {alert_str}")
-        return alert_str
-    
-    return ""
-
 def process_combined_data(all_data, timestamp):
     link_clicks = 0
     landing_page_views = 0
@@ -344,7 +254,6 @@ def process_combined_data(all_data, timestamp):
                     add_to_cart += aval
                 elif atype == "initiate_checkout":
                     initiate_checkout += aval
-                # FIXED: Only count offsite_conversion.fb_pixel_purchase (standard Meta tracking)
                 elif atype == "offsite_conversion.fb_pixel_purchase":
                     purchases += aval
 
@@ -368,7 +277,8 @@ def process_combined_data(all_data, timestamp):
 
     date = datetime.now(IST).strftime('%Y-%m-%d')
     
-    row = {
+    # For hourly sheet (with timestamp and formatted values)
+    hourly_row = {
         "Date": date,
         "Timestamp": timestamp,
         "Spend": f"₹{spend:,.0f}",
@@ -390,9 +300,32 @@ def process_combined_data(all_data, timestamp):
         "CPM": f"₹{cpm:.2f}"
     }
     
-    df = pd.DataFrame([row])
+    # For daily sheet (without timestamp, formatted values)
+    daily_row = {
+        "Date": date,
+        "Spend": f"₹{spend:,.0f}",
+        "Purchases Value": f"₹{purchases_value:,.0f}",
+        "Purchases": purchases,
+        "Impressions": impressions,
+        "Link Clicks": link_clicks,
+        "Landing Page Views": landing_page_views,
+        "Add to Cart": add_to_cart,
+        "Initiate Checkout": initiate_checkout,
+        "ROAS": round(roas, 2),
+        "CPC": f"₹{cpc:.2f}",
+        "CTR": f"{ctr:.2f}%",
+        "LC TO LPV": f"{lc_to_lpv:.2f}%",
+        "LPV TO ATC": f"{lpv_to_atc:.2f}%",
+        "ATC TO CI": f"{atc_to_ci:.2f}%",
+        "CI TO ORDERED": f"{ci_to_ordered:.2f}%",
+        "CVR": f"{cvr:.2f}%",
+        "CPM": f"₹{cpm:.2f}"
+    }
     
-    # Print summary with detailed funnel
+    hourly_df = pd.DataFrame([hourly_row])
+    daily_df = pd.DataFrame([daily_row])
+    
+    # Print summary
     log("=" * 60)
     log("📊 HOURLY DATA SUMMARY")
     log("=" * 60)
@@ -416,33 +349,83 @@ def process_combined_data(all_data, timestamp):
     log(f"   ROAS: {roas:.2f}")
     log("=" * 60)
     
-    return df
+    return hourly_df, daily_df
 
-def update_google_sheet(df):
+def update_hourly_sheet(df):
+    """Append new row to hourly data sheet"""
     try:
-        worksheet = sheet.worksheet(WORKSHEET_NAME)
+        worksheet = sheet.worksheet(HOURLY_WORKSHEET_NAME)
         existing = worksheet.get_all_values()
         start_row = len(existing) + 1
         
         if start_row == 1:
             set_with_dataframe(worksheet, df, include_column_header=True)
-            log(f"✅ Created sheet with headers and first row at A1")
-        else:
-            set_with_dataframe(worksheet, df, include_column_header=False, row=start_row)
-            log(f"✅ Appended data to row {start_row}")
-        
-        # Format header if it's the first row
-        if start_row == 1:
-            worksheet.format('A1:T1', {
+            log(f"✅ Created hourly sheet with headers at A1")
+            
+            # Format header
+            worksheet.format('A1:S1', {
                 'textFormat': {'bold': True, 'fontSize': 11},
                 'backgroundColor': {'red': 0.2, 'green': 0.2, 'blue': 0.2},
                 'textFormat': {'foregroundColor': {'red': 1, 'green': 1, 'blue': 1}},
                 'horizontalAlignment': 'CENTER'
             })
+        else:
+            set_with_dataframe(worksheet, df, include_column_header=False, row=start_row)
+            log(f"✅ Appended hourly data to row {start_row}")
         
         return True
     except Exception as e:
-        error_msg = f"Failed to update Google Sheet: {str(e)}"
+        error_msg = f"Failed to update hourly sheet: {str(e)}"
+        log(f"❌ {error_msg}")
+        write_error_to_sheet(error_msg)
+        return False
+
+def update_daily_sheet(df):
+    """Update or create daily summary (one row per day)"""
+    try:
+        worksheet = sheet.worksheet(DAILY_WORKSHEET_NAME)
+        existing = worksheet.get_all_values()
+        
+        current_date = datetime.now(IST).strftime('%Y-%m-%d')
+        
+        # Check if today's date already exists
+        date_exists = False
+        update_row = None
+        
+        if len(existing) > 1:
+            for idx, row in enumerate(existing[1:], start=2):
+                if row and row[0] == current_date:
+                    date_exists = True
+                    update_row = idx
+                    break
+        
+        if date_exists:
+            # Update existing row
+            values = [df.iloc[0].tolist()]
+            worksheet.update(f'A{update_row}:R{update_row}', values)
+            log(f"✅ Updated daily data for {current_date} at row {update_row}")
+        else:
+            # Append new row
+            start_row = len(existing) + 1
+            
+            if start_row == 1:
+                set_with_dataframe(worksheet, df, include_column_header=True)
+                log(f"✅ Created daily sheet with headers at A1")
+                
+                # Format header
+                worksheet.format('A1:R1', {
+                    'textFormat': {'bold': True, 'fontSize': 11},
+                    'backgroundColor': {'red': 0.2, 'green': 0.6, 'blue': 0.2},
+                    'textFormat': {'foregroundColor': {'red': 1, 'green': 1, 'blue': 1}},
+                    'horizontalAlignment': 'CENTER'
+                })
+            else:
+                set_with_dataframe(worksheet, df, include_column_header=False, row=start_row)
+                log(f"✅ Appended daily data to row {start_row}")
+        
+        return True
+    except Exception as e:
+        error_msg = f"Failed to update daily sheet: {str(e)}"
         log(f"❌ {error_msg}")
         write_error_to_sheet(error_msg)
         return False
@@ -451,7 +434,7 @@ def run_report(timestamp=None):
     if timestamp is None:
         timestamp = datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')
     
-    log(f"🚀 Starting hourly report for {timestamp}...")
+    log(f"🚀 Starting report update for {timestamp}...")
     
     if not validate_token():
         log("❌ Report failed: Invalid Meta Ads access token")
@@ -467,24 +450,30 @@ def run_report(timestamp=None):
         log("⚠️ No data to process")
         return False
     
-    df = process_combined_data(all_data, timestamp)
-    if df is None or df.empty:
+    hourly_df, daily_df = process_combined_data(all_data, timestamp)
+    if hourly_df is None or hourly_df.empty or daily_df is None or daily_df.empty:
         log("❌ Data processing failed or empty DataFrame")
         return False
     
-    if update_google_sheet(df):
-        log(f"✅ Hourly report completed successfully for {timestamp}")
+    # Update both sheets
+    hourly_success = update_hourly_sheet(hourly_df)
+    daily_success = update_daily_sheet(daily_df)
+    
+    if hourly_success and daily_success:
+        log(f"✅ Both sheets updated successfully for {timestamp}")
         return True
     return False
 
 def main():
     log("=" * 80)
-    log("🎯 META ADS HOURLY REPORTER - STARTING")
+    log("🎯 META ADS DAILY SALES TRACKER WITH HOURLY UPDATES")
     log("=" * 80)
     log(f"📅 Date: {datetime.now(IST).strftime('%Y-%m-%d')}")
     log(f"🕐 Time: {datetime.now(IST).strftime('%H:%M:%S IST')}")
     log(f"📍 Environment: {'Google Colab' if IN_COLAB else 'GitHub Actions'}")
     log(f"📊 Accounts: {len(AD_ACCOUNT_IDS)}")
+    log(f"📋 Hourly Sheet: {HOURLY_WORKSHEET_NAME}")
+    log(f"📈 Daily Sheet: {DAILY_WORKSHEET_NAME}")
     log("=" * 80)
     
     if setup_google_sheets():
@@ -493,7 +482,9 @@ def main():
         
         log("=" * 80)
         if success:
-            log("✅ ✅ ✅ HOURLY REPORT COMPLETED SUCCESSFULLY! ✅ ✅ ✅")
+            log("✅ ✅ ✅ REPORT COMPLETED SUCCESSFULLY! ✅ ✅ ✅")
+            log("📊 Hourly Data: New row added with timestamp")
+            log("📈 Daily Sales: Updated with latest cumulative data")
         else:
             log("⚠️ REPORT COMPLETED WITH WARNINGS")
         log("=" * 80)
