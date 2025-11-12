@@ -2,6 +2,7 @@ import sys
 import os
 import requests
 import pandas as pd
+import numpy as np
 from datetime import datetime, timedelta, timezone
 import time
 import gspread
@@ -261,6 +262,7 @@ def process_ad_level(all_ad_rows, today_str):
     """
     Build a per-ad table for TODAY (no Timestamp).
     Aggregates across accounts per ad_id/ad_name for the current run.
+    Uses np.nan (not pd.NA) to keep float dtypes and avoid object dtypes.
     """
     recs = []
     for r in all_ad_rows:
@@ -310,16 +312,30 @@ def process_ad_level(all_ad_rows, today_str):
     # Aggregate across accounts by ad for THIS RUN (so one row per ad for today)
     g = df.groupby(["ad_id","ad_name"], as_index=False).sum(numeric_only=True)
 
-    # Derived metrics per ad
-    g["ROAS"] = g["purchases_value"] / g["spend"].replace(0, pd.NA)
-    g["CPC"] = g["spend"] / g["clicks"].replace(0, pd.NA)
-    g["CPM"] = (g["spend"] / g["impressions"].replace(0, pd.NA)) * 1000
-    g["CTR"] = (g["clicks"] / g["impressions"].replace(0, pd.NA)) * 100
-    g["LC→LPV %"] = (g["landing_page_views"] / g["link_clicks"].replace(0, pd.NA)) * 100
-    g["LPV→ATC %"] = (g["add_to_cart"] / g["landing_page_views"].replace(0, pd.NA)) * 100
-    g["ATC→CI %"] = (g["initiate_checkout"] / g["add_to_cart"].replace(0, pd.NA)) * 100
-    g["CI→Order %"] = (g["purchases"] / g["initiate_checkout"].replace(0, pd.NA)) * 100
-    g["CVR %"] = (g["purchases"] / g["link_clicks"].replace(0, pd.NA)) * 100
+    # ---- Derived metrics (use np.nan to preserve float dtype) ----
+    spend_den = g["spend"].replace(0, np.nan).astype(float)
+    clicks_den = g["clicks"].replace(0, np.nan).astype(float)
+    impr_den   = g["impressions"].replace(0, np.nan).astype(float)
+    lclk_den   = g["link_clicks"].replace(0, np.nan).astype(float)
+    lpv_den    = g["landing_page_views"].replace(0, np.nan).astype(float)
+    atc_den    = g["add_to_cart"].replace(0, np.nan).astype(float)
+    ic_den     = g["initiate_checkout"].replace(0, np.nan).astype(float)
+
+    g["ROAS"]        = g["purchases_value"].astype(float) / spend_den
+    g["CPC"]         = g["spend"].astype(float)           / clicks_den
+    g["CPM"]         = (g["spend"].astype(float)          / impr_den) * 1000.0
+    g["CTR"]         = (g["clicks"].astype(float)         / impr_den) * 100.0
+    g["LC→LPV %"]    = (g["landing_page_views"].astype(float) / lclk_den) * 100.0
+    g["LPV→ATC %"]   = (g["add_to_cart"].astype(float)        / lpv_den)  * 100.0
+    g["ATC→CI %"]    = (g["initiate_checkout"].astype(float)  / atc_den)  * 100.0
+    g["CI→Order %"]  = (g["purchases"].astype(float)          / ic_den)   * 100.0
+    g["CVR %"]       = (g["purchases"].astype(float)          / lclk_den) * 100.0
+
+    # Ensure numeric dtypes before rounding/formatting
+    num_cols = ["spend","purchases_value","purchases","impressions","clicks",
+                "ROAS","CPC","CPM","CTR","LC→LPV %","LPV→ATC %","ATC→CI %","CI→Order %","CVR %"]
+    for c in num_cols:
+        g[c] = pd.to_numeric(g[c], errors="coerce")
 
     out = pd.DataFrame({
         "Date": today_str,
@@ -327,9 +343,9 @@ def process_ad_level(all_ad_rows, today_str):
         "Ad Name": g["ad_name"],
         "Spend": g["spend"].round(0),
         "Purchases Value": g["purchases_value"].round(0),
-        "Purchases": g["purchases"].astype(int),
-        "Impressions": g["impressions"].astype(int),
-        "Clicks": g["clicks"].astype(int),
+        "Purchases": g["purchases"].astype("Int64"),
+        "Impressions": g["impressions"].astype("Int64"),
+        "Clicks": g["clicks"].astype("Int64"),
         "ROAS": g["ROAS"].round(2),
         "CPC": g["CPC"].round(2),
         "CTR": g["CTR"].round(2),
