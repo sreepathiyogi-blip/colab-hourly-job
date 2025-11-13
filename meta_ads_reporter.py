@@ -55,7 +55,7 @@ API_VERSION = "v21.0"
 SPREADSHEET_ID = os.environ.get('SPREADSHEET_ID', "1Ka_DkNGCVi2h_plNN55-ZETW7M9MmFpTHocE7LZcYEM")
 HOURLY_WORKSHEET_NAME = "Hourly Data"
 DAILY_WORKSHEET_NAME = "Daily Sales Report"
-AD_LEVEL_SHEET_NAME = "Ad Level Daily Sales"  # Daily (no timestamp); upsert today's rows on each run
+AD_LEVEL_SHEET_NAME = "Ad Level Daily Sales"  # Only TODAY's data updates; historical dates FROZEN
 
 IST = timezone(timedelta(hours=5, minutes=30))
 sheets_client = None
@@ -358,8 +358,6 @@ def process_ad_level(all_ad_rows, today_str):
     # Fill any remaining NaN values with 0
     out = out.fillna(0)
     
-    # rename columns for final write to match expected sheet headers
-    # ensure "Ad ID" and "Ad Name" etc are present (they are)
     return out
 
 # ======================
@@ -405,9 +403,9 @@ def update_daily_summary_row(df_daily):
 
 def upsert_ad_level_daily(ad_df, today_str):
     """
-    Keep historical days. For TODAY:
-    - Remove any existing rows with Date == today_str
-    - Append the fresh per-ad rows (no timestamp)
+    ✨ NEW LOGIC: Keep historical data FROZEN ✨
+    - Previous dates: NEVER touched
+    - TODAY only: Remove existing rows with today's date and replace with fresh data
     """
     try:
         try:
@@ -418,9 +416,8 @@ def upsert_ad_level_daily(ad_df, today_str):
             log("✅ Ad Level Daily Sales created & written")
             return True
 
-        existing = ws.get_all_values()  # list of lists: first row = headers
+        existing = ws.get_all_values()
         if not existing:
-            # sheet empty: just write new df with headers
             set_with_dataframe(ws, ad_df, include_column_header=True, row=1, col=1)
             log("✅ Ad Level Daily Sales initialized (was empty)")
             return True
@@ -428,7 +425,7 @@ def upsert_ad_level_daily(ad_df, today_str):
         headers = existing[0]
         rows = existing[1:]
 
-        # --- make headers unique to avoid pandas reindexing errors ---
+        # Make headers unique to avoid pandas errors
         def make_unique(cols):
             seen = {}
             out = []
@@ -445,63 +442,47 @@ def upsert_ad_level_daily(ad_df, today_str):
 
         unique_headers = make_unique(headers)
 
-        # build df_exist safely
         if rows:
             df_exist = pd.DataFrame(rows, columns=unique_headers)
         else:
             df_exist = pd.DataFrame(columns=unique_headers)
 
-        # If the original header included "Date" but got renamed by make_unique,
-        # try to find the Date column (exact match or startswith 'Date')
+        # Find the Date column
         date_col = None
         for col in df_exist.columns:
-            if col == "Date":
-                date_col = "Date"
+            if col == "Date" or col.lower().startswith("date"):
+                date_col = col
                 break
-        if date_col is None and any(col.lower().startswith("date") for col in df_exist.columns):
-            # pick first matching date-like column
-            date_col = [c for c in df_exist.columns if c.lower().startswith("date")][0]
 
-        # Ensure there is a canonical "Date" column for our logic
-        if "Date" not in df_exist.columns:
-            # insert a clean Date column at position 0
+        if date_col is None or date_col not in df_exist.columns:
             df_exist.insert(0, "Date", "")
+            date_col = "Date"
 
-        # Normalize numeric columns (best-effort) and fill NaN with 0
-        num_cols = ["Spend","Purchases Value","Purchases","Impressions","Clicks","ROAS","CPC","CTR",
-                    "LC→LPV %","LPV→ATC %","ATC→CI %","CI→Order %","CVR %","CPM"]
-        for c in num_cols:
-            if c in df_exist.columns:
-                df_exist[c] = pd.to_numeric(df_exist[c], errors="coerce").fillna(0)
+        # ✨ KEY CHANGE: Keep ALL rows EXCEPT today's date ✨
+        df_historical = df_exist[df_exist[date_col] != today_str].copy()
+        
+        log(f"📌 Preserving {len(df_historical)} rows from previous dates (frozen)")
+        log(f"🔄 Replacing {len(df_exist[df_exist[date_col] == today_str])} rows for {today_str}")
 
-        # Keep history except today's rows
-        if "Date" in df_exist.columns and len(df_exist):
-            df_keep = df_exist[df_exist["Date"] != today_str].copy()
-        else:
-            df_keep = df_exist.copy()
-
-        # Combine history + new today
-        # Make sure ad_df has the same columns (or at least the important ones)
-        # If ad_df doesn't have "Date" column, add it
+        # Ensure ad_df has Date column
         if "Date" not in ad_df.columns:
             ad_df.insert(0, "Date", today_str)
         else:
             ad_df["Date"] = today_str
 
-        # Align columns: union of both frames
-        all_cols = list(dict.fromkeys(list(df_keep.columns) + list(ad_df.columns)))
-        df_keep = df_keep.reindex(columns=all_cols, fill_value=0)
+        # Align columns
+        all_cols = list(dict.fromkeys(list(df_historical.columns) + list(ad_df.columns)))
+        df_historical = df_historical.reindex(columns=all_cols, fill_value=0)
         ad_prepped = ad_df.reindex(columns=all_cols, fill_value=0)
 
-        df_new = pd.concat([df_keep, ad_prepped], ignore_index=True, sort=False)
-
-        # Final fillna to ensure no NaN values
+        # Combine: Historical (frozen) + Today's fresh data
+        df_new = pd.concat([df_historical, ad_prepped], ignore_index=True, sort=False)
         df_new = df_new.fillna(0)
 
-        # Clear and write back
+        # Write back
         ws.clear()
         set_with_dataframe(ws, df_new, include_column_header=True, row=1, col=1)
-        log(f"✅ Upserted {len(ad_df)} rows for {today_str} in Ad Level Daily Sales")
+        log(f"✅ Historical data preserved | Today ({today_str}): {len(ad_df)} fresh rows")
         return True
         
     except Exception as e:
@@ -512,7 +493,7 @@ def upsert_ad_level_daily(ad_df, today_str):
 # RUNNER
 # ======================
 def run_report():
-    timestamp = datetime.now(IST).strftime('%m/%d/%Y %H:%M:%S')  # used only in Hourly & Daily summary
+    timestamp = datetime.now(IST).strftime('%m/%d/%Y %H:%M:%S')
     today_str = datetime.now(IST).strftime('%m/%d/%Y')
     
     if not validate_token():
@@ -536,7 +517,7 @@ def run_report():
     # 2) Daily summary row (upsert by date)
     update_daily_summary_row(daily_df)
     
-    # 3) Ad Level Daily Sales (NO timestamp; upsert today's rows)
+    # 3) Ad Level Daily Sales (Historical FROZEN, only TODAY updates)
     ad_level_df = process_ad_level(all_ad_data, today_str)
     upsert_ad_level_daily(ad_level_df, today_str)
     
