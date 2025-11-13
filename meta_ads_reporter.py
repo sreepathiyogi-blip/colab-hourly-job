@@ -267,7 +267,7 @@ def process_ad_level(all_ad_rows, today_str):
     """
     Build a per-ad table for TODAY (no Timestamp).
     Aggregates across accounts per ad_id/ad_name for the current run.
-    Uses np.nan (not pd.NA) to keep float dtypes and avoid object dtypes.
+    Shows 0 for missing values instead of NaN.
     """
     recs = []
     for r in all_ad_rows:
@@ -324,30 +324,16 @@ def process_ad_level(all_ad_rows, today_str):
     # Aggregate across accounts by ad for THIS RUN (so one row per ad for today)
     g = df.groupby(["ad_id","ad_name"], as_index=False).sum(numeric_only=True)
     
-    # ---- Derived metrics (use np.nan to preserve float dtype) ----
-    spend_den = g["spend"].replace(0, np.nan).astype(float)
-    clicks_den = g["clicks"].replace(0, np.nan).astype(float)
-    impr_den = g["impressions"].replace(0, np.nan).astype(float)
-    lclk_den = g["link_clicks"].replace(0, np.nan).astype(float)
-    lpv_den = g["landing_page_views"].replace(0, np.nan).astype(float)
-    atc_den = g["add_to_cart"].replace(0, np.nan).astype(float)
-    ic_den = g["initiate_checkout"].replace(0, np.nan).astype(float)
-    
-    g["ROAS"] = g["purchases_value"].astype(float) / spend_den
-    g["CPC"] = g["spend"].astype(float) / clicks_den
-    g["CPM"] = (g["spend"].astype(float) / impr_den) * 1000.0
-    g["CTR"] = (g["clicks"].astype(float) / impr_den) * 100.0
-    g["LC→LPV %"] = (g["landing_page_views"].astype(float) / lclk_den) * 100.0
-    g["LPV→ATC %"] = (g["add_to_cart"].astype(float) / lpv_den) * 100.0
-    g["ATC→CI %"] = (g["initiate_checkout"].astype(float) / atc_den) * 100.0
-    g["CI→Order %"] = (g["purchases"].astype(float) / ic_den) * 100.0
-    g["CVR %"] = (g["purchases"].astype(float) / lclk_den) * 100.0
-    
-    # Ensure numeric dtypes before rounding/formatting
-    num_cols = ["spend","purchases_value","purchases","impressions","clicks",
-                "ROAS","CPC","CPM","CTR","LC→LPV %","LPV→ATC %","ATC→CI %","CI→Order %","CVR %"]
-    for c in num_cols:
-        g[c] = pd.to_numeric(g[c], errors="coerce")
+    # ---- Derived metrics (use 0 for division by zero instead of NaN) ----
+    g["ROAS"] = g.apply(lambda x: x["purchases_value"] / x["spend"] if x["spend"] > 0 else 0, axis=1)
+    g["CPC"] = g.apply(lambda x: x["spend"] / x["clicks"] if x["clicks"] > 0 else 0, axis=1)
+    g["CPM"] = g.apply(lambda x: (x["spend"] / x["impressions"]) * 1000 if x["impressions"] > 0 else 0, axis=1)
+    g["CTR"] = g.apply(lambda x: (x["clicks"] / x["impressions"]) * 100 if x["impressions"] > 0 else 0, axis=1)
+    g["LC→LPV %"] = g.apply(lambda x: (x["landing_page_views"] / x["link_clicks"]) * 100 if x["link_clicks"] > 0 else 0, axis=1)
+    g["LPV→ATC %"] = g.apply(lambda x: (x["add_to_cart"] / x["landing_page_views"]) * 100 if x["landing_page_views"] > 0 else 0, axis=1)
+    g["ATC→CI %"] = g.apply(lambda x: (x["initiate_checkout"] / x["add_to_cart"]) * 100 if x["add_to_cart"] > 0 else 0, axis=1)
+    g["CI→Order %"] = g.apply(lambda x: (x["purchases"] / x["initiate_checkout"]) * 100 if x["initiate_checkout"] > 0 else 0, axis=1)
+    g["CVR %"] = g.apply(lambda x: (x["purchases"] / x["link_clicks"]) * 100 if x["link_clicks"] > 0 else 0, axis=1)
     
     out = pd.DataFrame({
         "Date": today_str,
@@ -355,9 +341,9 @@ def process_ad_level(all_ad_rows, today_str):
         "Ad Name": g["ad_name"],
         "Spend": g["spend"].round(0),
         "Purchases Value": g["purchases_value"].round(0),
-        "Purchases": g["purchases"].astype("Int64"),
-        "Impressions": g["impressions"].astype("Int64"),
-        "Clicks": g["clicks"].astype("Int64"),
+        "Purchases": g["purchases"].astype(int),
+        "Impressions": g["impressions"].astype(int),
+        "Clicks": g["clicks"].astype(int),
         "ROAS": g["ROAS"].round(2),
         "CPC": g["CPC"].round(2),
         "CTR": g["CTR"].round(2),
@@ -368,6 +354,9 @@ def process_ad_level(all_ad_rows, today_str):
         "CVR %": g["CVR %"].round(2),
         "CPM": g["CPM"].round(2),
     }).sort_values(["Spend","Purchases Value"], ascending=False).reset_index(drop=True)
+    
+    # Fill any remaining NaN values with 0
+    out = out.fillna(0)
     
     return out
 
@@ -442,12 +431,12 @@ def upsert_ad_level_daily(ad_df, today_str):
         if "Date" not in df_exist.columns and len(df_exist):
             df_exist.insert(0, "Date", "")
         
-        # Normalize numeric columns (best-effort)
+        # Normalize numeric columns (best-effort) and fill NaN with 0
         num_cols = ["Spend","Purchases Value","Purchases","Impressions","Clicks","ROAS","CPC","CTR",
                     "LC→LPV %","LPV→ATC %","ATC→CI %","CI→Order %","CVR %","CPM"]
         for c in num_cols:
             if c in df_exist.columns:
-                df_exist[c] = pd.to_numeric(df_exist[c], errors="coerce")
+                df_exist[c] = pd.to_numeric(df_exist[c], errors="coerce").fillna(0)
         
         # Keep history except today's rows
         if "Date" in df_exist.columns and len(df_exist):
@@ -457,6 +446,9 @@ def upsert_ad_level_daily(ad_df, today_str):
         
         # Combine history + new today
         df_new = pd.concat([df_keep, ad_df], ignore_index=True)
+        
+        # Final fillna to ensure no NaN values
+        df_new = df_new.fillna(0)
         
         # Clear and write back
         ws.clear()
