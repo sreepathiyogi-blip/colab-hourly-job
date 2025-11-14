@@ -49,13 +49,17 @@ else:
 # ======================
 # CONFIGURATION
 # ======================
-ACCESS_TOKEN = os.environ.get('META_ACCESS_TOKEN', "EAAHeR1E5PKUBP19I9GXYVw8kWusULp7l7ZBbyHf1qZCzBdPZA7enpZAbLZBQGajtASZCJWbesZCthHzV0K8xd2KfDKYZBRZAGjbMDtOZCmlX3jlRpMQUlAp8OedkqBD12rr35FnL4InZCrqhfV3fPTVACozb5YWZC7KmXZBgRabEbE1rwuKnZBJwsHYn0oOPtyZBm504dFJgE1ZA3KTw")
+ACCESS_TOKEN = os.environ.get('META_ACCESS_TOKEN')
+if not ACCESS_TOKEN:
+    ACCESS_TOKEN = "EAAHeR1E5PKUBP19I9GXYVw8kWusULp7l7ZBbyHf1qZCzBdPZA7enpZAbLZBQGajtASZCJWbesZCthHzV0K8xd2KfDKYZBRZAGjbMDtOZCmlX3jlRpMQUlAp8OedkqBD12rr35FnL4InZCrqhfV3fPTVACozb5YWZC7KmXZBgRabEbE1rwuKnZBJwsHYn0oOPtyZBm504dFJgE1ZA3KTw"
+    print("⚠️ Using hardcoded META_ACCESS_TOKEN - consider setting environment variable")
+
 AD_ACCOUNT_IDS = ["act_1820431671907314", "act_24539675529051798"]
 API_VERSION = "v21.0"
 SPREADSHEET_ID = os.environ.get('SPREADSHEET_ID', "1Ka_DkNGCVi2h_plNN55-ZETW7M9MmFpTHocE7LZcYEM")
 HOURLY_WORKSHEET_NAME = "Hourly Data"
 DAILY_WORKSHEET_NAME = "Daily Sales Report"
-AD_LEVEL_SHEET_NAME = "Ad Level Daily Sales"  # Only TODAY's data updates; historical dates FROZEN
+AD_LEVEL_SHEET_NAME = "Ad Level Daily Sales"
 
 IST = timezone(timedelta(hours=5, minutes=30))
 sheets_client = None
@@ -88,7 +92,6 @@ def setup_google_sheets():
             try:
                 sheet.worksheet(ws_name)
             except gspread.WorksheetNotFound:
-                # Plenty of rows/cols for growth
                 sheet.add_worksheet(title=ws_name, rows=20000, cols=50)
         
         log("✅ Google Sheets setup completed")
@@ -138,7 +141,6 @@ def _paginate(url, params):
         next_url = paging.get("next")
         if not next_url:
             break
-        # After first call, follow absolute 'next' without params
         url, params = next_url, {}
     return results
 
@@ -157,7 +159,6 @@ def fetch_meta_data_account_today(account_id):
         return []
 
 def fetch_meta_data_ads_today(account_id):
-    # Include ad identifiers & names
     fields = COMMON_FIELDS + ",ad_id,ad_name"
     url = f"https://graph.facebook.com/{API_VERSION}/{account_id}/insights"
     params = {
@@ -203,15 +204,18 @@ def _extract_metrics(items):
             if valact.get("action_type") == "offsite_conversion.fb_pixel_purchase":
                 purchases_value += float(valact.get("value", 0) or 0)
     
+    # Calculate metrics
     roas = purchases_value / spend if spend else 0
     cpc = spend / clicks if clicks else 0
     cpm = spend / impressions * 1000 if impressions else 0
-    ctr = clicks / impressions * 100 if impressions else 0
-    lc_to_lpv = (landing_page_views / link_clicks) if link_clicks else 0
-    lpv_to_atc = (add_to_cart / landing_page_views) if landing_page_views else 0
-    atc_to_ci = (initiate_checkout / add_to_cart) if add_to_cart else 0
-    ci_to_ordered = (purchases / initiate_checkout) if initiate_checkout else 0
-    cvr = (purchases / link_clicks) if link_clicks else 0
+    
+    # ✅ FIX: All percentages now multiplied by 100 for consistency
+    ctr = (clicks / impressions) * 100 if impressions else 0
+    lc_to_lpv = (landing_page_views / link_clicks) * 100 if link_clicks else 0
+    lpv_to_atc = (add_to_cart / landing_page_views) * 100 if landing_page_views else 0
+    atc_to_ci = (initiate_checkout / add_to_cart) * 100 if add_to_cart else 0
+    ci_to_ordered = (purchases / initiate_checkout) * 100 if initiate_checkout else 0
+    cvr = (purchases / link_clicks) * 100 if link_clicks else 0
     
     return {
         "Spend": spend,
@@ -321,23 +325,23 @@ def process_ad_level(all_ad_rows, today_str):
     
     df = pd.DataFrame(recs)
     
-    # Aggregate across accounts by ad for THIS RUN (so one row per ad for today)
+    # Aggregate across accounts by ad for THIS RUN
     g = df.groupby(["ad_id","ad_name"], as_index=False).sum(numeric_only=True)
     
-    # ---- Derived metrics (use 0 for division by zero instead of NaN) ----
-    g["ROAS"] = g.apply(lambda x: x["purchases_value"] / x["spend"] if x["spend"] > 0 else 0, axis=1)
-    g["CPC"] = g.apply(lambda x: x["spend"] / x["clicks"] if x["clicks"] > 0 else 0, axis=1)
-    g["CPM"] = g.apply(lambda x: (x["spend"] / x["impressions"]) * 1000 if x["impressions"] > 0 else 0, axis=1)
-    g["CTR"] = g.apply(lambda x: (x["clicks"] / x["impressions"]) * 100 if x["impressions"] > 0 else 0, axis=1)
+    # ✅ Derived metrics - Using numpy for better performance
+    g["ROAS"] = np.where(g["spend"] > 0, g["purchases_value"] / g["spend"], 0)
+    g["CPC"] = np.where(g["clicks"] > 0, g["spend"] / g["clicks"], 0)
+    g["CPM"] = np.where(g["impressions"] > 0, (g["spend"] / g["impressions"]) * 1000, 0)
+    g["CTR"] = np.where(g["impressions"] > 0, (g["clicks"] / g["impressions"]) * 100, 0)
     
     # Funnel conversion rates (each step uses the PREVIOUS step as denominator)
-    g["LC→LPV %"] = g.apply(lambda x: (x["landing_page_views"] / x["link_clicks"]) * 100 if x["link_clicks"] > 0 else 0, axis=1)
-    g["LPV→ATC %"] = g.apply(lambda x: (x["add_to_cart"] / x["landing_page_views"]) * 100 if x["landing_page_views"] > 0 else 0, axis=1)
-    g["ATC→CI %"] = g.apply(lambda x: (x["initiate_checkout"] / x["add_to_cart"]) * 100 if x["add_to_cart"] > 0 else 0, axis=1)
-    g["CI→Order %"] = g.apply(lambda x: (x["purchases"] / x["initiate_checkout"]) * 100 if x["initiate_checkout"] > 0 else 0, axis=1)
+    g["LC→LPV %"] = np.where(g["link_clicks"] > 0, (g["landing_page_views"] / g["link_clicks"]) * 100, 0)
+    g["LPV→ATC %"] = np.where(g["landing_page_views"] > 0, (g["add_to_cart"] / g["landing_page_views"]) * 100, 0)
+    g["ATC→CI %"] = np.where(g["add_to_cart"] > 0, (g["initiate_checkout"] / g["add_to_cart"]) * 100, 0)
+    g["CI→Order %"] = np.where(g["initiate_checkout"] > 0, (g["purchases"] / g["initiate_checkout"]) * 100, 0)
     
     # Overall conversion rate (purchases from link clicks)
-    g["CVR %"] = g.apply(lambda x: (x["purchases"] / x["link_clicks"]) * 100 if x["link_clicks"] > 0 else 0, axis=1)
+    g["CVR %"] = np.where(g["link_clicks"] > 0, (g["purchases"] / g["link_clicks"]) * 100, 0)
     
     out = pd.DataFrame({
         "Date": today_str,
@@ -359,7 +363,6 @@ def process_ad_level(all_ad_rows, today_str):
         "CPM": g["CPM"].round(2),
     }).sort_values(["Spend","Purchases Value"], ascending=False).reset_index(drop=True)
     
-    # Fill any remaining NaN values with 0
     out = out.fillna(0)
     
     return out
@@ -376,7 +379,7 @@ def update_hourly_sheet(df):
         log("✅ Hourly sheet updated")
         return True
     except Exception as e:
-        write_error_to_sheet(str(e))
+        write_error_to_sheet(f"Hourly sheet update error: {e}")
         return False
 
 def update_daily_summary_row(df_daily):
@@ -402,12 +405,12 @@ def update_daily_summary_row(df_daily):
         
         return True
     except Exception as e:
-        write_error_to_sheet(str(e))
+        write_error_to_sheet(f"Daily summary update error: {e}")
         return False
 
 def upsert_ad_level_daily(ad_df, today_str):
     """
-    ✨ NEW LOGIC: Keep historical data FROZEN ✨
+    ✨ Keep historical data FROZEN ✨
     - Previous dates: NEVER touched
     - TODAY only: Remove existing rows with today's date and replace with fresh data
     """
@@ -438,6 +441,7 @@ def upsert_ad_level_daily(ad_df, today_str):
                 if base in seen:
                     seen[base] += 1
                     new = f"{base}_{seen[base]}"
+                    log(f"⚠️ Duplicate column detected: {base} -> {new}")
                 else:
                     seen[base] = 0
                     new = base
@@ -462,7 +466,7 @@ def upsert_ad_level_daily(ad_df, today_str):
             df_exist.insert(0, "Date", "")
             date_col = "Date"
 
-        # ✨ KEY CHANGE: Keep ALL rows EXCEPT today's date ✨
+        # ✨ Keep ALL rows EXCEPT today's date ✨
         df_historical = df_exist[df_exist[date_col] != today_str].copy()
         
         log(f"📌 Preserving {len(df_historical)} rows from previous dates (frozen)")
@@ -501,18 +505,22 @@ def run_report():
     today_str = datetime.now(IST).strftime('%m/%d/%Y')
     
     if not validate_token():
+        log("❌ Token validation failed")
         return False
     
     # Fetch data
     all_account_data = []
     all_ad_data = []
     for account_id in AD_ACCOUNT_IDS:
+        log(f"📊 Fetching data for {account_id}...")
         all_account_data.extend(fetch_meta_data_account_today(account_id))
         all_ad_data.extend(fetch_meta_data_ads_today(account_id))
     
     if not all_account_data:
         write_error_to_sheet("No account-level data returned.")
         return False
+    
+    log(f"✅ Fetched {len(all_account_data)} account records, {len(all_ad_data)} ad records")
     
     # 1) Hourly summary row (append)
     hourly_df, daily_df = process_account_summary(all_account_data, timestamp)
@@ -525,7 +533,7 @@ def run_report():
     ad_level_df = process_ad_level(all_ad_data, today_str)
     upsert_ad_level_daily(ad_level_df, today_str)
     
-    log("✅ Hourly summary, Daily summary, and Ad Level Daily Sales updated")
+    log("✅ All reports updated successfully")
     return True
 
 def main():
