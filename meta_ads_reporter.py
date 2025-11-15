@@ -208,8 +208,6 @@ def _extract_metrics(items):
     roas = purchases_value / spend if spend else 0
     cpc = spend / clicks if clicks else 0
     cpm = spend / impressions * 1000 if impressions else 0
-    
-    # ✅ FIX: All percentages now multiplied by 100 for consistency
     ctr = (clicks / impressions) * 100 if impressions else 0
     lc_to_lpv = (landing_page_views / link_clicks) * 100 if link_clicks else 0
     lpv_to_atc = (add_to_cart / landing_page_views) * 100 if landing_page_views else 0
@@ -269,9 +267,8 @@ def process_account_summary(all_account_data, timestamp):
 
 def process_ad_level(all_ad_rows, today_str):
     """
-    Build a per-ad table for TODAY (no Timestamp).
-    Aggregates across accounts per ad_id/ad_name for the current run.
-    Shows 0 for missing values instead of NaN.
+    Build a per-ad table for TODAY with enhanced formatting.
+    Shows formatted values with currency symbols and percentages.
     """
     recs = []
     for r in all_ad_rows:
@@ -318,9 +315,9 @@ def process_ad_level(all_ad_rows, today_str):
     
     if not recs:
         return pd.DataFrame(columns=[
-            "Date","Ad ID","Ad Name","Spend","Purchases Value","Purchases",
+            "Date","Ad ID","Ad Name","Spend","Revenue","Orders",
             "Impressions","Clicks","ROAS","CPC","CTR",
-            "LC→LPV %","LPV→ATC %","ATC→CI %","CI→Order %","CVR %","CPM"
+            "LC→LPV","LPV→ATC","ATC→CI","CI→Order","CVR","CPM"
         ])
     
     df = pd.DataFrame(recs)
@@ -328,42 +325,43 @@ def process_ad_level(all_ad_rows, today_str):
     # Aggregate across accounts by ad for THIS RUN
     g = df.groupby(["ad_id","ad_name"], as_index=False).sum(numeric_only=True)
     
-    # ✅ Derived metrics - Using numpy for better performance
+    # Calculate metrics (raw values)
     g["ROAS"] = np.where(g["spend"] > 0, g["purchases_value"] / g["spend"], 0)
     g["CPC"] = np.where(g["clicks"] > 0, g["spend"] / g["clicks"], 0)
     g["CPM"] = np.where(g["impressions"] > 0, (g["spend"] / g["impressions"]) * 1000, 0)
     g["CTR"] = np.where(g["impressions"] > 0, (g["clicks"] / g["impressions"]) * 100, 0)
     
-    # Funnel conversion rates (each step uses the PREVIOUS step as denominator)
-    g["LC→LPV %"] = np.where(g["link_clicks"] > 0, (g["landing_page_views"] / g["link_clicks"]) * 100, 0)
-    g["LPV→ATC %"] = np.where(g["landing_page_views"] > 0, (g["add_to_cart"] / g["landing_page_views"]) * 100, 0)
-    g["ATC→CI %"] = np.where(g["add_to_cart"] > 0, (g["initiate_checkout"] / g["add_to_cart"]) * 100, 0)
-    g["CI→Order %"] = np.where(g["initiate_checkout"] > 0, (g["purchases"] / g["initiate_checkout"]) * 100, 0)
+    # Funnel conversion rates
+    g["LC→LPV"] = np.where(g["link_clicks"] > 0, (g["landing_page_views"] / g["link_clicks"]) * 100, 0)
+    g["LPV→ATC"] = np.where(g["landing_page_views"] > 0, (g["add_to_cart"] / g["landing_page_views"]) * 100, 0)
+    g["ATC→CI"] = np.where(g["add_to_cart"] > 0, (g["initiate_checkout"] / g["add_to_cart"]) * 100, 0)
+    g["CI→Order"] = np.where(g["initiate_checkout"] > 0, (g["purchases"] / g["initiate_checkout"]) * 100, 0)
+    g["CVR"] = np.where(g["link_clicks"] > 0, (g["purchases"] / g["link_clicks"]) * 100, 0)
     
-    # Overall conversion rate (purchases from link clicks)
-    g["CVR %"] = np.where(g["link_clicks"] > 0, (g["purchases"] / g["link_clicks"]) * 100, 0)
-    
+    # Create formatted output DataFrame
     out = pd.DataFrame({
         "Date": today_str,
         "Ad ID": g["ad_id"],
         "Ad Name": g["ad_name"],
-        "Spend": g["spend"].round(0),
-        "Purchases Value": g["purchases_value"].round(0),
-        "Purchases": g["purchases"].astype(int),
-        "Impressions": g["impressions"].astype(int),
+        "Spend": g["spend"].apply(lambda x: f"₹{x:,.0f}" if x > 0 else "₹0"),
+        "Revenue": g["purchases_value"].apply(lambda x: f"₹{x:,.0f}" if x > 0 else "₹0"),
+        "Orders": g["purchases"].astype(int),
+        "Impressions": g["impressions"].apply(lambda x: f"{x:,}"),
         "Clicks": g["clicks"].astype(int),
-        "ROAS": g["ROAS"].round(2),
-        "CPC": g["CPC"].round(2),
-        "CTR": g["CTR"].round(2),
-        "LC→LPV %": g["LC→LPV %"].round(2),
-        "LPV→ATC %": g["LPV→ATC %"].round(2),
-        "ATC→CI %": g["ATC→CI %"].round(2),
-        "CI→Order %": g["CI→Order %"].round(2),
-        "CVR %": g["CVR %"].round(2),
-        "CPM": g["CPM"].round(2),
-    }).sort_values(["Spend","Purchases Value"], ascending=False).reset_index(drop=True)
+        "ROAS": g["ROAS"].apply(lambda x: f"{x:.2f}" if x > 0 else "0"),
+        "CPC": g["CPC"].apply(lambda x: f"₹{x:.0f}" if x > 0 else "₹0"),
+        "CTR": g["CTR"].apply(lambda x: f"{x:.0f}%" if x > 0 else "0%"),
+        "LC→LPV": g["LC→LPV"].apply(lambda x: f"{x:.0f}%" if x > 0 else "0%"),
+        "LPV→ATC": g["LPV→ATC"].apply(lambda x: f"{x:.0f}%" if x > 0 else "0%"),
+        "ATC→CI": g["ATC→CI"].apply(lambda x: f"{x:.0f}%" if x > 0 else "0%"),
+        "CI→Order": g["CI→Order"].apply(lambda x: f"{x:.0f}%" if x > 0 else "0%"),
+        "CVR": g["CVR"].apply(lambda x: f"{x:.0f}%" if x > 0 else "0%"),
+        "CPM": g["CPM"].apply(lambda x: f"₹{x:.0f}" if x > 0 else "₹0"),
+    })
     
-    out = out.fillna(0)
+    # Sort by spend (need to convert back to numeric for sorting)
+    spend_numeric = g["spend"].values
+    out = out.iloc[np.argsort(-spend_numeric)].reset_index(drop=True)
     
     return out
 
@@ -480,12 +478,11 @@ def upsert_ad_level_daily(ad_df, today_str):
 
         # Align columns
         all_cols = list(dict.fromkeys(list(df_historical.columns) + list(ad_df.columns)))
-        df_historical = df_historical.reindex(columns=all_cols, fill_value=0)
-        ad_prepped = ad_df.reindex(columns=all_cols, fill_value=0)
+        df_historical = df_historical.reindex(columns=all_cols, fill_value="0")
+        ad_prepped = ad_df.reindex(columns=all_cols, fill_value="0")
 
         # Combine: Historical (frozen) + Today's fresh data
         df_new = pd.concat([df_historical, ad_prepped], ignore_index=True, sort=False)
-        df_new = df_new.fillna(0)
 
         # Write back
         ws.clear()
