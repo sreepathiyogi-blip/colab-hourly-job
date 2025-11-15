@@ -267,8 +267,8 @@ def process_account_summary(all_account_data, timestamp):
 
 def process_ad_level(all_ad_rows, today_str):
     """
-    Build a per-ad table for TODAY with enhanced formatting.
-    Shows formatted values with currency symbols and percentages.
+    Build a per-ad table for TODAY with RAW NUMERIC values.
+    Google Sheets will handle formatting - we send clean numbers.
     """
     recs = []
     for r in all_ad_rows:
@@ -325,43 +325,42 @@ def process_ad_level(all_ad_rows, today_str):
     # Aggregate across accounts by ad for THIS RUN
     g = df.groupby(["ad_id","ad_name"], as_index=False).sum(numeric_only=True)
     
-    # Calculate metrics (raw values)
+    # Calculate metrics as NUMERIC values (not formatted strings)
     g["ROAS"] = np.where(g["spend"] > 0, g["purchases_value"] / g["spend"], 0)
     g["CPC"] = np.where(g["clicks"] > 0, g["spend"] / g["clicks"], 0)
     g["CPM"] = np.where(g["impressions"] > 0, (g["spend"] / g["impressions"]) * 1000, 0)
     g["CTR"] = np.where(g["impressions"] > 0, (g["clicks"] / g["impressions"]) * 100, 0)
     
-    # Funnel conversion rates
+    # Funnel conversion rates (as percentages - numeric)
     g["LC→LPV"] = np.where(g["link_clicks"] > 0, (g["landing_page_views"] / g["link_clicks"]) * 100, 0)
     g["LPV→ATC"] = np.where(g["landing_page_views"] > 0, (g["add_to_cart"] / g["landing_page_views"]) * 100, 0)
     g["ATC→CI"] = np.where(g["add_to_cart"] > 0, (g["initiate_checkout"] / g["add_to_cart"]) * 100, 0)
     g["CI→Order"] = np.where(g["initiate_checkout"] > 0, (g["purchases"] / g["initiate_checkout"]) * 100, 0)
     g["CVR"] = np.where(g["link_clicks"] > 0, (g["purchases"] / g["link_clicks"]) * 100, 0)
     
-    # Create formatted output DataFrame
+    # Sort by spend descending
+    g = g.sort_values("spend", ascending=False).reset_index(drop=True)
+    
+    # Create output with RAW NUMBERS (Google Sheets will format)
     out = pd.DataFrame({
         "Date": today_str,
         "Ad ID": g["ad_id"],
         "Ad Name": g["ad_name"],
-        "Spend": g["spend"].apply(lambda x: f"₹{x:,.0f}" if x > 0 else "₹0"),
-        "Revenue": g["purchases_value"].apply(lambda x: f"₹{x:,.0f}" if x > 0 else "₹0"),
+        "Spend": g["spend"].round(2),
+        "Revenue": g["purchases_value"].round(2),
         "Orders": g["purchases"].astype(int),
-        "Impressions": g["impressions"].apply(lambda x: f"{x:,}"),
+        "Impressions": g["impressions"].astype(int),
         "Clicks": g["clicks"].astype(int),
-        "ROAS": g["ROAS"].apply(lambda x: f"{x:.2f}" if x > 0 else "0"),
-        "CPC": g["CPC"].apply(lambda x: f"₹{x:.0f}" if x > 0 else "₹0"),
-        "CTR": g["CTR"].apply(lambda x: f"{x:.0f}%" if x > 0 else "0%"),
-        "LC→LPV": g["LC→LPV"].apply(lambda x: f"{x:.0f}%" if x > 0 else "0%"),
-        "LPV→ATC": g["LPV→ATC"].apply(lambda x: f"{x:.0f}%" if x > 0 else "0%"),
-        "ATC→CI": g["ATC→CI"].apply(lambda x: f"{x:.0f}%" if x > 0 else "0%"),
-        "CI→Order": g["CI→Order"].apply(lambda x: f"{x:.0f}%" if x > 0 else "0%"),
-        "CVR": g["CVR"].apply(lambda x: f"{x:.0f}%" if x > 0 else "0%"),
-        "CPM": g["CPM"].apply(lambda x: f"₹{x:.0f}" if x > 0 else "₹0"),
+        "ROAS": g["ROAS"].round(2),
+        "CPC": g["CPC"].round(2),
+        "CTR": g["CTR"].round(2),
+        "LC→LPV": g["LC→LPV"].round(2),
+        "LPV→ATC": g["LPV→ATC"].round(2),
+        "ATC→CI": g["ATC→CI"].round(2),
+        "CI→Order": g["CI→Order"].round(2),
+        "CVR": g["CVR"].round(2),
+        "CPM": g["CPM"].round(2)
     })
-    
-    # Sort by spend (need to convert back to numeric for sorting)
-    spend_numeric = g["spend"].values
-    out = out.iloc[np.argsort(-spend_numeric)].reset_index(drop=True)
     
     return out
 
