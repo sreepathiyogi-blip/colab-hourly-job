@@ -267,8 +267,8 @@ def process_account_summary(all_account_data, timestamp):
 
 def process_ad_level(all_ad_rows, today_str):
     """
-    Build a per-ad table for TODAY with RAW NUMERIC values.
-    Google Sheets will handle formatting - we send clean numbers.
+    Build a per-ad table for TODAY with CLEAN NUMERIC values (no duplicates).
+    Google Sheets will handle all formatting.
     """
     recs = []
     for r in all_ad_rows:
@@ -314,34 +314,36 @@ def process_ad_level(all_ad_rows, today_str):
         })
     
     if not recs:
+        # Return empty dataframe with clean column structure
         return pd.DataFrame(columns=[
             "Date","Ad ID","Ad Name","Spend","Revenue","Orders",
-            "Impressions","Clicks","ROAS","CPC","CTR",
-            "LC→LPV","LPV→ATC","ATC→CI","CI→Order","CVR","CPM"
+            "Impressions","Clicks","Link Clicks","Landing Page Views",
+            "Add to Cart","Initiate Checkout","ROAS","CPC","CTR","CPM",
+            "LC→LPV%","LPV→ATC%","ATC→CI%","CI→Order%","CVR%"
         ])
     
     df = pd.DataFrame(recs)
     
-    # Aggregate across accounts by ad for THIS RUN
+    # Aggregate by ad (in case same ad appears in multiple accounts)
     g = df.groupby(["ad_id","ad_name"], as_index=False).sum(numeric_only=True)
     
-    # Calculate metrics as NUMERIC values (not formatted strings)
+    # ✅ Calculate ALL metrics as NUMERIC (no formatting, no duplicates)
     g["ROAS"] = np.where(g["spend"] > 0, g["purchases_value"] / g["spend"], 0)
     g["CPC"] = np.where(g["clicks"] > 0, g["spend"] / g["clicks"], 0)
     g["CPM"] = np.where(g["impressions"] > 0, (g["spend"] / g["impressions"]) * 1000, 0)
     g["CTR"] = np.where(g["impressions"] > 0, (g["clicks"] / g["impressions"]) * 100, 0)
     
-    # Funnel conversion rates (as percentages - numeric)
-    g["LC→LPV"] = np.where(g["link_clicks"] > 0, (g["landing_page_views"] / g["link_clicks"]) * 100, 0)
-    g["LPV→ATC"] = np.where(g["landing_page_views"] > 0, (g["add_to_cart"] / g["landing_page_views"]) * 100, 0)
-    g["ATC→CI"] = np.where(g["add_to_cart"] > 0, (g["initiate_checkout"] / g["add_to_cart"]) * 100, 0)
-    g["CI→Order"] = np.where(g["initiate_checkout"] > 0, (g["purchases"] / g["initiate_checkout"]) * 100, 0)
-    g["CVR"] = np.where(g["link_clicks"] > 0, (g["purchases"] / g["link_clicks"]) * 100, 0)
+    # ✅ Funnel conversion rates - CLEAN calculation (one time only)
+    g["LC→LPV%"] = np.where(g["link_clicks"] > 0, (g["landing_page_views"] / g["link_clicks"]) * 100, 0)
+    g["LPV→ATC%"] = np.where(g["landing_page_views"] > 0, (g["add_to_cart"] / g["landing_page_views"]) * 100, 0)
+    g["ATC→CI%"] = np.where(g["add_to_cart"] > 0, (g["initiate_checkout"] / g["add_to_cart"]) * 100, 0)
+    g["CI→Order%"] = np.where(g["initiate_checkout"] > 0, (g["purchases"] / g["initiate_checkout"]) * 100, 0)
+    g["CVR%"] = np.where(g["link_clicks"] > 0, (g["purchases"] / g["link_clicks"]) * 100, 0)
     
     # Sort by spend descending
     g = g.sort_values("spend", ascending=False).reset_index(drop=True)
     
-    # Create output with RAW NUMBERS (Google Sheets will format)
+    # ✅ Create FINAL output with CLEAN column structure (NO DUPLICATES)
     out = pd.DataFrame({
         "Date": today_str,
         "Ad ID": g["ad_id"],
@@ -351,15 +353,19 @@ def process_ad_level(all_ad_rows, today_str):
         "Orders": g["purchases"].astype(int),
         "Impressions": g["impressions"].astype(int),
         "Clicks": g["clicks"].astype(int),
+        "Link Clicks": g["link_clicks"].astype(int),
+        "Landing Page Views": g["landing_page_views"].astype(int),
+        "Add to Cart": g["add_to_cart"].astype(int),
+        "Initiate Checkout": g["initiate_checkout"].astype(int),
         "ROAS": g["ROAS"].round(2),
         "CPC": g["CPC"].round(2),
         "CTR": g["CTR"].round(2),
-        "LC→LPV": g["LC→LPV"].round(2),
-        "LPV→ATC": g["LPV→ATC"].round(2),
-        "ATC→CI": g["ATC→CI"].round(2),
-        "CI→Order": g["CI→Order"].round(2),
-        "CVR": g["CVR"].round(2),
-        "CPM": g["CPM"].round(2)
+        "CPM": g["CPM"].round(2),
+        "LC→LPV%": g["LC→LPV%"].round(2),
+        "LPV→ATC%": g["LPV→ATC%"].round(2),
+        "ATC→CI%": g["ATC→CI%"].round(2),
+        "CI→Order%": g["CI→Order%"].round(2),
+        "CVR%": g["CVR%"].round(2)
     })
     
     return out
@@ -429,28 +435,10 @@ def upsert_ad_level_daily(ad_df, today_str):
         headers = existing[0]
         rows = existing[1:]
 
-        # Make headers unique to avoid pandas errors
-        def make_unique(cols):
-            seen = {}
-            out = []
-            for c in cols:
-                base = c if c is not None else ""
-                if base in seen:
-                    seen[base] += 1
-                    new = f"{base}_{seen[base]}"
-                    log(f"⚠️ Duplicate column detected: {base} -> {new}")
-                else:
-                    seen[base] = 0
-                    new = base
-                out.append(new)
-            return out
-
-        unique_headers = make_unique(headers)
-
         if rows:
-            df_exist = pd.DataFrame(rows, columns=unique_headers)
+            df_exist = pd.DataFrame(rows, columns=headers)
         else:
-            df_exist = pd.DataFrame(columns=unique_headers)
+            df_exist = pd.DataFrame(columns=headers)
 
         # Find the Date column
         date_col = None
@@ -463,10 +451,10 @@ def upsert_ad_level_daily(ad_df, today_str):
             df_exist.insert(0, "Date", "")
             date_col = "Date"
 
-        # ✨ Keep ALL rows EXCEPT today's date ✨
+        # ✅ Keep ALL rows EXCEPT today's date (preserve history)
         df_historical = df_exist[df_exist[date_col] != today_str].copy()
         
-        log(f"📌 Preserving {len(df_historical)} rows from previous dates (frozen)")
+        log(f"📌 Preserving {len(df_historical)} rows from previous dates")
         log(f"🔄 Replacing {len(df_exist[df_exist[date_col] == today_str])} rows for {today_str}")
 
         # Ensure ad_df has Date column
@@ -475,10 +463,16 @@ def upsert_ad_level_daily(ad_df, today_str):
         else:
             ad_df["Date"] = today_str
 
-        # Align columns
-        all_cols = list(dict.fromkeys(list(df_historical.columns) + list(ad_df.columns)))
-        df_historical = df_historical.reindex(columns=all_cols, fill_value="0")
-        ad_prepped = ad_df.reindex(columns=all_cols, fill_value="0")
+        # ✅ Align columns (use ad_df structure as master to avoid duplicates)
+        all_cols = list(ad_df.columns)
+        
+        # Add any historical columns not in new data
+        for col in df_historical.columns:
+            if col not in all_cols:
+                all_cols.append(col)
+        
+        df_historical = df_historical.reindex(columns=all_cols, fill_value=0)
+        ad_prepped = ad_df.reindex(columns=all_cols, fill_value=0)
 
         # Combine: Historical (frozen) + Today's fresh data
         df_new = pd.concat([df_historical, ad_prepped], ignore_index=True, sort=False)
@@ -486,11 +480,12 @@ def upsert_ad_level_daily(ad_df, today_str):
         # Write back
         ws.clear()
         set_with_dataframe(ws, df_new, include_column_header=True, row=1, col=1)
-        log(f"✅ Historical data preserved | Today ({today_str}): {len(ad_df)} fresh rows")
+        log(f"✅ Historical preserved | Today ({today_str}): {len(ad_df)} fresh rows | Total: {len(df_new)} rows")
         return True
         
     except Exception as e:
         write_error_to_sheet(f"Ad-level daily upsert failed: {e}")
+        log(f"❌ Full error: {e}")
         return False
 
 # ======================
