@@ -485,8 +485,8 @@ class MetricsProcessor:
         return pd.DataFrame([{
             "Date": datetime.now(Config.IST).strftime('%m/%d/%Y'),
             "Timestamp": timestamp,
-            "Spend": round(metrics['Spend'], 2),
-            "Purchases Value": round(metrics['Purchases Value'], 2),
+            "Spend": f"₹{round(metrics['Spend'], 2)}",
+            "Purchases Value": f"₹{round(metrics['Purchases Value'], 2)}",
             "Purchases": metrics["Purchases"],
             "Impressions": metrics["Impressions"],
             "Link Clicks": metrics["Link Clicks"],
@@ -494,14 +494,14 @@ class MetricsProcessor:
             "Add to Cart": metrics["Add to Cart"],
             "Initiate Checkout": metrics["Initiate Checkout"],
             "ROAS": round(metrics["ROAS"], 2),
-            "CPC": round(metrics['CPC'], 2),
+            "CPC": f"₹{round(metrics['CPC'], 2)}",
             "CTR": round(metrics['CTR'], 2),
             "LC TO LPV": round(metrics['LC TO LPV'], 2),
             "LPV TO ATC": round(metrics['LPV TO ATC'], 2),
             "ATC TO CI": round(metrics['ATC TO CI'], 2),
             "CI TO ORDERED": round(metrics['CI TO ORDERED'], 2),
             "CVR": round(metrics['CVR'], 2),
-            "CPM": round(metrics['CPM'], 2)
+            "CPM": f"₹{round(metrics['CPM'], 2)}"
         }])
     
     @staticmethod
@@ -569,8 +569,8 @@ class MetricsProcessor:
             "Date": today_str,
             "Ad ID": df_agg["ad_id"],
             "Ad Name": df_agg["ad_name"],
-            "Spend": df_agg["spend"].round(2),
-            "Revenue": df_agg["purchases_value"].round(2),
+            "Spend": df_agg["spend"].apply(lambda x: f"₹{round(x, 2)}"),
+            "Revenue": df_agg["purchases_value"].apply(lambda x: f"₹{round(x, 2)}"),
             "Orders": df_agg["purchases"].astype(int),
             "Impressions": df_agg["impressions"].astype(int),
             "Clicks": df_agg["clicks"].astype(int),
@@ -579,9 +579,9 @@ class MetricsProcessor:
             "Add to Cart": df_agg["add_to_cart"].astype(int),
             "Initiate Checkout": df_agg["initiate_checkout"].astype(int),
             "ROAS": df_agg["ROAS"].round(2),
-            "CPC": df_agg["CPC"].round(2),
+            "CPC": df_agg["CPC"].apply(lambda x: f"₹{round(x, 2)}"),
             "CTR": df_agg["CTR"].round(2),
-            "CPM": df_agg["CPM"].round(2),
+            "CPM": df_agg["CPM"].apply(lambda x: f"₹{round(x, 2)}"),
             "LC to LPV": df_agg["LC_to_LPV"].round(2),
             "LPV to ATC": df_agg["LPV_to_ATC"].round(2),
             "ATC to CI": df_agg["ATC_to_CI"].round(2),
