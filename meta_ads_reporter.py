@@ -38,7 +38,7 @@ if IN_COLAB:
             }
             setInterval(KeepAlive, 60000);
             console.log("✅ Keep-alive system activated!");
-        '''))
+        ''' ))
     
     def heartbeat():
         """Periodic heartbeat to show session is active."""
@@ -453,6 +453,7 @@ class MetricsProcessor:
         cpm = (spend / impressions) * 1000 if impressions > 0 else 0
         ctr = (clicks / impressions) * 100 if impressions > 0 else 0
         
+        # Keep these for Hourly/Daily reports (unchanged)
         lc_to_lpv = (landing_page_views / link_clicks) * 100 if link_clicks > 0 else 0
         lpv_to_atc = (add_to_cart / landing_page_views) * 100 if landing_page_views > 0 else 0
         atc_to_ci = (initiate_checkout / add_to_cart) * 100 if add_to_cart > 0 else 0
@@ -515,13 +516,12 @@ class MetricsProcessor:
     
     @staticmethod
     def create_ad_level_report(ad_data: List[Dict], today_str: str) -> pd.DataFrame:
-        """Create ad-level performance report."""
+        """Create ad-level performance report WITHOUT the conversion funnel columns."""
         if not ad_data:
             return pd.DataFrame(columns=[
                 "Date", "Ad ID", "Ad Name", "Spend", "Revenue", "Orders",
                 "Impressions", "Clicks", "Link Clicks", "Landing Page Views",
-                "Add to Cart", "Initiate Checkout", "ROAS", "CPC", "CTR", "CPM",
-                "LC to LPV", "LPV to ATC", "ATC to CI", "CI to Order", "CVR"
+                "Add to Cart", "Initiate Checkout", "ROAS", "CPC", "CTR", "CPM"
             ])
         
         records = []
@@ -548,18 +548,11 @@ class MetricsProcessor:
         # Aggregate by ad (in case same ad appears in multiple accounts)
         df_agg = df.groupby(["ad_id", "ad_name"], as_index=False).sum(numeric_only=True)
         
-        # Calculate metrics
+        # Calculate metrics (keep core metrics only)
         df_agg["ROAS"] = np.where(df_agg["spend"] > 0, df_agg["purchases_value"] / df_agg["spend"], 0)
         df_agg["CPC"] = np.where(df_agg["clicks"] > 0, df_agg["spend"] / df_agg["clicks"], 0)
         df_agg["CPM"] = np.where(df_agg["impressions"] > 0, (df_agg["spend"] / df_agg["impressions"]) * 1000, 0)
         df_agg["CTR"] = np.where(df_agg["impressions"] > 0, (df_agg["clicks"] / df_agg["impressions"]), 0)
-        
-        # Conversion rates as decimals (0.05 = 5% when formatted as percentage in Sheets)
-        df_agg["LC_to_LPV"] = np.where(df_agg["link_clicks"] > 0, (df_agg["landing_page_views"] / df_agg["link_clicks"]), 0)
-        df_agg["LPV_to_ATC"] = np.where(df_agg["landing_page_views"] > 0, (df_agg["add_to_cart"] / df_agg["landing_page_views"]), 0)
-        df_agg["ATC_to_CI"] = np.where(df_agg["add_to_cart"] > 0, (df_agg["initiate_checkout"] / df_agg["add_to_cart"]), 0)
-        df_agg["CI_to_Order"] = np.where(df_agg["initiate_checkout"] > 0, (df_agg["purchases"] / df_agg["initiate_checkout"]), 0)
-        df_agg["CVR"] = np.where(df_agg["link_clicks"] > 0, (df_agg["purchases"] / df_agg["link_clicks"]), 0)
         
         # Sort by spend
         df_agg = df_agg.sort_values("spend", ascending=False).reset_index(drop=True)
@@ -581,12 +574,7 @@ class MetricsProcessor:
             "ROAS": df_agg["ROAS"].round(2),
             "CPC": df_agg["CPC"].apply(lambda x: f"₹{round(x, 2)}"),
             "CTR": df_agg["CTR"].round(2),
-            "CPM": df_agg["CPM"].apply(lambda x: f"₹{round(x, 2)}"),
-            "LC to LPV": df_agg["LC_to_LPV"].round(2),
-            "LPV to ATC": df_agg["LPV_to_ATC"].round(2),
-            "ATC to CI": df_agg["ATC_to_CI"].round(2),
-            "CI to Order": df_agg["CI_to_Order"].round(2),
-            "CVR": df_agg["CVR"].round(2)
+            "CPM": df_agg["CPM"].apply(lambda x: f"₹{round(x, 2)}")
         })
 
 # ============================================
