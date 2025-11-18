@@ -20,7 +20,7 @@ if IN_COLAB:
     from threading import Thread
     from google.colab import auth
     from google.auth import default
-    
+
     def keep_colab_alive():
         """Prevents Colab from disconnecting during long runs."""
         display(Javascript('''
@@ -39,13 +39,13 @@ if IN_COLAB:
             setInterval(KeepAlive, 60000);
             console.log("✅ Keep-alive system activated!");
         ''' ))
-    
+
     def heartbeat():
         """Periodic heartbeat to show session is active."""
         while True:
             time.sleep(300)
             print(f"💚 Heartbeat: Session active at {datetime.now().strftime('%H:%M:%S')}")
-    
+
     Thread(target=heartbeat, daemon=True).start()
     print("✅ Keep-alive enabled for Google Colab")
     keep_colab_alive()
@@ -471,7 +471,7 @@ class MetricsProcessor:
             "Initiate Checkout": initiate_checkout,
             "ROAS": roas,
             "CPC": cpc,
-            "CTR": ctr,
+            "CTR": ctr,                        # CTR as percentage number (e.g. 1.4 for 1.4%)
             "CPM": cpm,
             "LC TO LPV": lc_to_lpv,
             "LPV TO ATC": lpv_to_atc,
@@ -482,7 +482,7 @@ class MetricsProcessor:
     
     @staticmethod
     def create_hourly_report(metrics: Dict, timestamp: str) -> pd.DataFrame:
-        """Create hourly report dataframe with NUMERIC values (Google Sheets handles formatting)."""
+        """Create hourly report dataframe with FORMATTED values for display."""
         return pd.DataFrame([{
             "Date": datetime.now(Config.IST).strftime('%m/%d/%Y'),
             "Timestamp": timestamp,
@@ -496,13 +496,14 @@ class MetricsProcessor:
             "Initiate Checkout": metrics["Initiate Checkout"],
             "ROAS": round(metrics["ROAS"], 2),
             "CPC": f"₹{round(metrics['CPC'], 2)}",
-            "CTR": round(metrics['CTR'], 2),
-            "LC TO LPV": round(metrics['LC TO LPV'], 2),
-            "LPV TO ATC": round(metrics['LPV TO ATC'], 2),
-            "ATC TO CI": round(metrics['ATC TO CI'], 2),
-            "CI TO ORDERED": round(metrics['CI TO ORDERED'], 2),
-            "CVR": round(metrics['CVR'], 2),
-            "CPM": f"₹{round(metrics['CPM'], 2)}"
+            # These are percent-strings for human display
+            "CTR": f"{round(metrics['CTR'], 2)}%",
+            "LC TO LPV": f"{round(metrics['LC TO LPV'], 2)}%",
+            "LPV TO ATC": f"{round(metrics['LPV TO ATC'], 2)}%",
+            "ATC TO CI": f"{round(metrics['ATC TO CI'], 2)}%",
+            "CI TO ORDERED": f"{round(metrics['CI TO ORDERED'], 2)}%",
+            "CVR": f"{round(metrics['CVR'], 2)}%",
+            "CPM": f"₹ {round(metrics['CPM'], 2)}"   # space after currency as requested
         }])
     
     @staticmethod
@@ -552,13 +553,15 @@ class MetricsProcessor:
         df_agg["ROAS"] = np.where(df_agg["spend"] > 0, df_agg["purchases_value"] / df_agg["spend"], 0)
         df_agg["CPC"] = np.where(df_agg["clicks"] > 0, df_agg["spend"] / df_agg["clicks"], 0)
         df_agg["CPM"] = np.where(df_agg["impressions"] > 0, (df_agg["spend"] / df_agg["impressions"]) * 1000, 0)
+        # CTR as decimal -> convert to percent string for display
         df_agg["CTR"] = np.where(df_agg["impressions"] > 0, (df_agg["clicks"] / df_agg["impressions"]), 0)
         
         # Sort by spend
         df_agg = df_agg.sort_values("spend", ascending=False).reset_index(drop=True)
         
         # Format output with CLEAN column names matching the calculated columns
-        return pd.DataFrame({
+        # Format CTR and currency fields for readability
+        out_df = pd.DataFrame({
             "Date": today_str,
             "Ad ID": df_agg["ad_id"],
             "Ad Name": df_agg["ad_name"],
@@ -573,9 +576,12 @@ class MetricsProcessor:
             "Initiate Checkout": df_agg["initiate_checkout"].astype(int),
             "ROAS": df_agg["ROAS"].round(2),
             "CPC": df_agg["CPC"].apply(lambda x: f"₹{round(x, 2)}"),
-            "CTR": df_agg["CTR"].round(2),
+            # Present CTR as percent-string (e.g. 1.40%)
+            "CTR": df_agg["CTR"].apply(lambda x: f\"{round(x * 100, 2)}%\" ),
             "CPM": df_agg["CPM"].apply(lambda x: f"₹{round(x, 2)}")
         })
+        
+        return out_df
 
 # ============================================
 # MAIN RUNNER
@@ -624,16 +630,16 @@ class MetaAdsTracker:
         timestamp = datetime.now(Config.IST).strftime('%m/%d/%Y %H:%M:%S')
         today_str = datetime.now(Config.IST).strftime('%m/%d/%Y')
         
-        # 1. Hourly Report (append)
+        # 1. Hourly Report (append) - now formatted
         metrics = self.processor.calculate_metrics(all_account_data)
         hourly_df = self.processor.create_hourly_report(metrics, timestamp)
         self.sheets_manager.update_hourly(hourly_df)
         
-        # 2. Daily Summary (upsert)
+        # 2. Daily Summary (upsert) - formatted percent-strings & currency
         daily_df = self.processor.create_daily_report(metrics)
         self.sheets_manager.update_daily(daily_df)
         
-        # 3. Ad Level Report (preserve history, update today)
+        # 3. Ad Level Report (preserve history, update today) - no funnel columns, CTR formatted
         ad_level_df = self.processor.create_ad_level_report(all_ad_data, today_str)
         self.sheets_manager.update_ad_level(ad_level_df, today_str)
         
