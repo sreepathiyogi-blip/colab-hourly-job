@@ -548,7 +548,7 @@ class MetricsProcessor:
         # Aggregate by ad (in case same ad appears in multiple accounts)
         df_agg = df.groupby(["ad_id", "ad_name"], as_index=False).sum(numeric_only=True)
         
-        # Calculate metrics (no multiplication by 100 - store as decimal for Google Sheets percentage format)
+        # Calculate metrics
         df_agg["ROAS"] = np.where(df_agg["spend"] > 0, df_agg["purchases_value"] / df_agg["spend"], 0)
         df_agg["CPC"] = np.where(df_agg["clicks"] > 0, df_agg["spend"] / df_agg["clicks"], 0)
         df_agg["CPM"] = np.where(df_agg["impressions"] > 0, (df_agg["spend"] / df_agg["impressions"]) * 1000, 0)
@@ -564,7 +564,7 @@ class MetricsProcessor:
         # Sort by spend
         df_agg = df_agg.sort_values("spend", ascending=False).reset_index(drop=True)
         
-        # Format output with CLEAN column names (no special characters)
+        # Format output with CLEAN column names matching the calculated columns
         return pd.DataFrame({
             "Date": today_str,
             "Ad ID": df_agg["ad_id"],
@@ -582,11 +582,11 @@ class MetricsProcessor:
             "CPC": df_agg["CPC"].round(2),
             "CTR": df_agg["CTR"].round(2),
             "CPM": df_agg["CPM"].round(2),
-            "LC to LPV": df_agg["LC→LPV%"].round(2),
-            "LPV to ATC": df_agg["LPV→ATC%"].round(2),
-            "ATC to CI": df_agg["ATC→CI%"].round(2),
-            "CI to Order": df_agg["CI→Order%"].round(2),
-            "CVR": df_agg["CVR%"].round(2)
+            "LC to LPV": df_agg["LC_to_LPV"].round(2),
+            "LPV to ATC": df_agg["LPV_to_ATC"].round(2),
+            "ATC to CI": df_agg["ATC_to_CI"].round(2),
+            "CI to Order": df_agg["CI_to_Order"].round(2),
+            "CVR": df_agg["CVR"].round(2)
         })
 
 # ============================================
