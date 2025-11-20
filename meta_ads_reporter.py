@@ -1,5 +1,6 @@
-# FULLY PATCHED META ADS TRACKER SCRIPT - HOURLY SCHEDULER
-# Runs every hour at :05 minutes (e.g., 10:05, 11:05, 12:05)
+# FULLY PATCHED META ADS TRACKER SCRIPT
+# Designed for GitHub Actions hourly cron job execution
+# Includes: formatting fixes, CTR f-string bug fixed, ad-level funnel removed
 
 import sys
 import os
@@ -12,7 +13,6 @@ import gspread
 from gspread_dataframe import set_with_dataframe
 from typing import List, Dict, Optional
 import logging
-import schedule
 
 # ============================================
 # ENVIRONMENT DETECTION
@@ -46,7 +46,7 @@ else:
 # CONFIGURATION
 # ============================================
 class Config:
-    ACCESS_TOKEN = os.environ.get('META_ACCESS_TOKEN', "EAAHeR1E5PKUBP19I9GXYVw8kWusULp7l7ZBbyHf1qZCzBdPZA7enpZAbLZBQGajtASZCJWbesZCthHzV0K8xd2KfDKYZBRZAGjbMDtOZCmlX3jlRpMQUlAp8OedkqBD12rr35FnL4InZCrqhfV3fPTVACozb5YWZC7KmXZBgRabEbE1rwuKnZBJwsHYn0oOPtyZBm504dFJgE1ZA3KTw")
+    ACCESS_TOKEN = os.environ.get('META_ACCESS_TOKEN', "")
     AD_ACCOUNT_IDS = [
         "act_1820431671907314",
         "act_24539675529051798"
@@ -422,33 +422,27 @@ class MetaAdsTracker:
         self.processor = MetricsProcessor()
 
     def run(self) -> bool:
-        logger.info("🔄 META ADS TRACKER - HOURLY RUN STARTED")
+        logger.info("META ADS TRACKER STARTED")
         sheets_ok = self.sheets_manager.setup()
-        
         if not self.api_client.access_token:
-            logger.error("❌ META_ACCESS_TOKEN not set!")
-            return False
-            
+            token = input('Enter Meta ACCESS TOKEN (or set META_ACCESS_TOKEN env): ').strip()
+            self.api_client.access_token = token
         all_ad_items = []
         for acct in Config.AD_ACCOUNT_IDS:
             items = self.api_client.fetch_ad_insights(acct)
-            logger.info(f"📊 Fetched {len(items)} records from {acct}")
+            logger.info(f"Fetched {len(items)} records from {acct}")
             all_ad_items.extend(items)
-            
         if not all_ad_items:
-            logger.warning('⚠️ No ad-level data returned.')
+            logger.warning('No ad-level data returned.')
             return False
-            
         today_str = datetime.now(Config.IST).strftime('%m/%d/%Y')
         ad_df = self.processor.create_ad_level_report(all_ad_items, today_str)
-        
         if sheets_ok:
             try:
                 self.sheets_manager.update_ad_level(ad_df, today_str)
             except Exception as e:
                 logger.error(f"Failed to update ad-level sheet: {e}")
-                
-        # Aggregate metrics for daily/hourly
+        # aggregate metrics for daily/hourly
         metrics = {
             'Spend': 0.0,
             'Purchases Value': 0.0,
@@ -459,7 +453,6 @@ class MetaAdsTracker:
             'Add to Cart': 0,
             'Initiate Checkout': 0
         }
-        
         for it in all_ad_items:
             metrics['Spend'] += MetricsProcessor._safe_float(it.get('spend'))
             metrics['Impressions'] += MetricsProcessor._safe_int(it.get('impressions'))
@@ -470,12 +463,10 @@ class MetaAdsTracker:
             metrics['Initiate Checkout'] += acts.get('initiate_checkout',0)
             metrics['Purchases'] += acts.get('purchases',0)
             metrics['Purchases Value'] += MetricsProcessor.extract_purchase_value(it)
-            
         metrics['ROAS'] = metrics['Purchases Value'] / metrics['Spend'] if metrics['Spend']>0 else 0
         metrics['CPC'] = metrics['Spend'] / metrics['Link Clicks'] if metrics['Link Clicks']>0 else 0
         metrics['CPM'] = (metrics['Spend'] / metrics['Impressions'])*1000 if metrics['Impressions']>0 else 0
         metrics['CTR'] = (metrics['Link Clicks'] / metrics['Impressions'])*100 if metrics['Impressions']>0 else 0
-        
         hourly_df = pd.DataFrame([{
             'Date': datetime.now(Config.IST).strftime('%m/%d/%Y'),
             'Timestamp': datetime.now(Config.IST).strftime('%m/%d/%Y %H:%M:%S'),
@@ -497,91 +488,35 @@ class MetaAdsTracker:
             'CVR': f"{round((metrics['Purchases']/metrics['Link Clicks'])*100,2)}%" if metrics['Link Clicks']>0 else "0.00%",
             'CPM': f"₹ {round(metrics['CPM'],2)}"
         }])
-        
         if sheets_ok:
             try:
                 self.sheets_manager.update_hourly(hourly_df)
             except Exception as e:
                 logger.error(f"Failed to update hourly sheet: {e}")
-                
         daily_df = hourly_df.drop(columns=['Timestamp'])
         if sheets_ok:
             try:
                 self.sheets_manager.update_daily(daily_df)
             except Exception as e:
                 logger.error(f"Failed to update daily sheet: {e}")
-                
-        # Save ad-level CSV locally
+        # save ad-level CSV locally for Colab download
         try:
             ad_df.to_csv('ad_level.csv', index=False)
-            logger.info('💾 Saved ad_level.csv')
             if IN_COLAB:
                 from google.colab import files
                 files.download('ad_level.csv')
         except Exception:
             pass
-            
-        logger.info('✅ Hourly run completed successfully')
+        logger.info('Done')
         return True
-
-# ============================================
-# SCHEDULER
-# ============================================
-def scheduled_job():
-    """Job that runs every hour at :05 minutes"""
-    try:
-        tracker = MetaAdsTracker()
-        tracker.run()
-    except Exception as e:
-        logger.error(f"❌ Scheduled job failed: {e}")
-
-def wait_for_next_run():
-    """Calculate seconds until next :05 mark"""
-    now = datetime.now(Config.IST)
-    target_minute = 5
-    
-    if now.minute < target_minute:
-        # Wait until :05 this hour
-        next_run = now.replace(minute=target_minute, second=0, microsecond=0)
-    else:
-        # Wait until :05 next hour
-        next_run = (now + timedelta(hours=1)).replace(minute=target_minute, second=0, microsecond=0)
-    
-    wait_seconds = (next_run - now).total_seconds()
-    logger.info(f"⏰ Next run scheduled at {next_run.strftime('%H:%M:%S IST')} ({int(wait_seconds)}s)")
-    return wait_seconds
 
 # ============================================
 # ENTRY POINT
 # ============================================
 if __name__ == '__main__':
-    logger.info("=" * 60)
-    logger.info("🚀 META ADS HOURLY TRACKER - SCHEDULER STARTED")
-    logger.info("📅 Runs every hour at :05 minutes (10:05, 11:05, etc.)")
-    logger.info("=" * 60)
-    
-    # Validate access token
-    if not Config.ACCESS_TOKEN:
-        logger.error("❌ META_ACCESS_TOKEN not set in environment!")
-        sys.exit(1)
-    
-    # Run immediately on start
-    logger.info("▶️ Running initial fetch...")
-    scheduled_job()
-    
-    # Schedule hourly runs at :05
-    schedule.every().hour.at(":05").do(scheduled_job)
-    
-    logger.info("⏳ Scheduler initialized. Waiting for next hourly trigger...")
-    
-    # Main loop
-    while True:
-        try:
-            schedule.run_pending()
-            time.sleep(30)  # Check every 30 seconds
-        except KeyboardInterrupt:
-            logger.info("\n🛑 Scheduler stopped by user")
-            break
-        except Exception as e:
-            logger.error(f"❌ Scheduler error: {e}")
-            time.sleep(60)  # Wait a minute before retrying
+    tracker = MetaAdsTracker()
+    ok = tracker.run()
+    if ok:
+        print('Script completed successfully')
+    else:
+        print('Script finished with no data or errors')
