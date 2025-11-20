@@ -1,4 +1,5 @@
 name: Run meta_ads_reporter hourly
+
 on:
   schedule:
     # Runs every hour at minute 0 (UTC time)
