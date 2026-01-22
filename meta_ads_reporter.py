@@ -124,7 +124,7 @@ class GoogleSheetsManager:
             existing = ws.get_all_values()
             row = len(existing) + 1
             timestamp = datetime.now(Config.IST).strftime('%m/%d/%Y %H:%M:%S')
-            ws.update(f"A{row}", [[f"❌ Error at {timestamp}: {error_message}"]])
+            ws.update(values=[[f"❌ Error at {timestamp}: {error_message}"]], range_name=f"A{row}")
         except Exception as e:
             logger.error(f"Failed to write error to sheet: {e}")
 
@@ -172,6 +172,14 @@ class GoogleSheetsManager:
         try:
             ws = self.spreadsheet.worksheet(Config.AD_LEVEL_WORKSHEET)
             existing = ws.get_all_values()
+            
+            # Convert DataFrame to native Python types to avoid int64 serialization issues
+            df = df.copy()
+            for col in df.columns:
+                if df[col].dtype == 'int64':
+                    df[col] = df[col].astype(int)
+                elif df[col].dtype == 'float64':
+                    df[col] = df[col].astype(float)
             
             # Initialize sheet if empty
             if not existing:
@@ -229,6 +237,13 @@ class GoogleSheetsManager:
                 # Fallback: just append (no Ad ID column found)
                 df_combined = pd.concat([df_existing, df_new], ignore_index=True)
                 logger.info(f"✅ Ad Level sheet updated: {len(df_new)} rows appended (no Ad ID matching)")
+            
+            # Convert combined dataframe to native types before writing
+            for col in df_combined.columns:
+                if df_combined[col].dtype == 'int64':
+                    df_combined[col] = df_combined[col].astype(object)
+                elif df_combined[col].dtype == 'float64':
+                    df_combined[col] = df_combined[col].astype(object)
             
             # Write back to sheet
             ws.clear()
