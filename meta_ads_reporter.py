@@ -1,6 +1,7 @@
 # FULLY PATCHED META ADS TRACKER SCRIPT
 # Designed for GitHub Actions hourly cron job execution
 # Includes: formatting fixes, CTR f-string bug fixed, ad-level funnel removed
+# UPDATED: Ad-level updates existing rows by Ad ID (no duplicates)
 
 import sys
 import os
@@ -164,38 +165,75 @@ class GoogleSheetsManager:
             return False
 
     def update_ad_level(self, df: pd.DataFrame, date_label: str) -> bool:
+        """
+        Updates Ad Level Daily Sales sheet.
+        Updates existing rows by matching Ad ID, no duplicates created.
+        """
         try:
             ws = self.spreadsheet.worksheet(Config.AD_LEVEL_WORKSHEET)
             existing = ws.get_all_values()
+            
+            # Initialize sheet if empty
             if not existing:
                 set_with_dataframe(ws, df, include_column_header=True, row=1, col=1)
-                logger.info("Ad Level sheet initialized")
+                logger.info("✅ Ad Level sheet initialized with new data")
                 return True
+            
             headers = existing[0]
             rows = existing[1:]
+            
+            # Create dataframe from existing data
             if rows:
                 df_existing = pd.DataFrame(rows, columns=headers)
             else:
                 df_existing = pd.DataFrame(columns=headers)
-            date_col = next((c for c in df_existing.columns if c.lower() == 'date'), None)
-            if date_col is None:
-                df_existing.insert(0, 'Date', '')
-                date_col = 'Date'
-            df_historical = df_existing[df_existing[date_col] != date_label].copy()
+            
+            # Ensure new data has Date column
             if 'Date' not in df.columns:
                 df.insert(0, 'Date', date_label)
             else:
                 df['Date'] = date_label
+            
+            # Align columns between existing and new data
             all_cols = list(df.columns)
-            for c in df_historical.columns:
+            for c in df_existing.columns:
                 if c not in all_cols:
                     all_cols.append(c)
-            df_historical = df_historical.reindex(columns=all_cols, fill_value=0)
-            df_new_aligned = df.reindex(columns=all_cols, fill_value=0)
-            df_combined = pd.concat([df_historical, df_new_aligned], ignore_index=True)
+            
+            df_existing = df_existing.reindex(columns=all_cols, fill_value='')
+            df_new = df.reindex(columns=all_cols, fill_value='')
+            
+            # Find Ad ID column
+            ad_id_col = next((c for c in all_cols if 'ad id' in c.lower()), None)
+            
+            if ad_id_col and ad_id_col in df_existing.columns:
+                # Update existing rows by Ad ID, append new ones
+                existing_ad_ids = set(df_existing[ad_id_col].values)
+                new_ad_ids = set(df_new[ad_id_col].values)
+                
+                # Update existing ads
+                for ad_id in new_ad_ids:
+                    if ad_id in existing_ad_ids:
+                        # Update the existing row
+                        mask = df_existing[ad_id_col] == ad_id
+                        new_row_data = df_new[df_new[ad_id_col] == ad_id].iloc[0]
+                        df_existing.loc[mask] = new_row_data.values
+                    else:
+                        # Append new ad
+                        new_row = df_new[df_new[ad_id_col] == ad_id].iloc[0:1]
+                        df_existing = pd.concat([df_existing, new_row], ignore_index=True)
+                
+                df_combined = df_existing
+                logger.info(f"✅ Ad Level sheet updated: {len(new_ad_ids & existing_ad_ids)} ads updated, {len(new_ad_ids - existing_ad_ids)} new ads added")
+            else:
+                # Fallback: just append (no Ad ID column found)
+                df_combined = pd.concat([df_existing, df_new], ignore_index=True)
+                logger.info(f"✅ Ad Level sheet updated: {len(df_new)} rows appended (no Ad ID matching)")
+            
+            # Write back to sheet
             ws.clear()
             set_with_dataframe(ws, df_combined, include_column_header=True, row=1, col=1)
-            logger.info(f"Updated Ad Level sheet: {len(df_new_aligned)} rows added | Total: {len(df_combined)}")
+            
             return True
         except Exception as e:
             logger.error(f"Failed to update Ad Level sheet: {e}")
