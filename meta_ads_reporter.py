@@ -1,7 +1,7 @@
 # FULLY PATCHED META ADS TRACKER SCRIPT
 # Designed for GitHub Actions hourly cron job execution
-# Includes: formatting fixes, CTR f-string bug fixed, ad-level funnel removed
-# UPDATED: Ad-level updates existing rows by Ad ID (no duplicates)
+# Includes: formatting fixes, CTR f-string bug fixed, ad-level appends daily data
+# UPDATED: Ad-level appends new rows for each date (no deletion)
 
 import sys
 import os
@@ -167,11 +167,17 @@ class GoogleSheetsManager:
     def update_ad_level(self, df: pd.DataFrame, date_label: str) -> bool:
         """
         Updates Ad Level Daily Sales sheet.
-        Updates existing rows by matching Ad ID, no duplicates created.
+        Appends new rows for each date without deleting previous data.
         """
         try:
             ws = self.spreadsheet.worksheet(Config.AD_LEVEL_WORKSHEET)
             existing = ws.get_all_values()
+            
+            # Ensure new data has Date column
+            if 'Date' not in df.columns:
+                df.insert(0, 'Date', date_label)
+            else:
+                df['Date'] = date_label
             
             # Convert DataFrame to native Python types to avoid int64 serialization issues
             df = df.copy()
@@ -181,73 +187,16 @@ class GoogleSheetsManager:
                 elif df[col].dtype == 'float64':
                     df[col] = df[col].astype(float)
             
-            # Initialize sheet if empty
-            if not existing:
+            # If sheet is empty, write with headers
+            if not existing or len(existing) == 0:
                 set_with_dataframe(ws, df, include_column_header=True, row=1, col=1)
-                logger.info("✅ Ad Level sheet initialized with new data")
+                logger.info(f"✅ Ad Level sheet initialized with {len(df)} rows for {date_label}")
                 return True
             
-            headers = existing[0]
-            rows = existing[1:]
-            
-            # Create dataframe from existing data
-            if rows:
-                df_existing = pd.DataFrame(rows, columns=headers)
-            else:
-                df_existing = pd.DataFrame(columns=headers)
-            
-            # Ensure new data has Date column
-            if 'Date' not in df.columns:
-                df.insert(0, 'Date', date_label)
-            else:
-                df['Date'] = date_label
-            
-            # Align columns between existing and new data
-            all_cols = list(df.columns)
-            for c in df_existing.columns:
-                if c not in all_cols:
-                    all_cols.append(c)
-            
-            df_existing = df_existing.reindex(columns=all_cols, fill_value='')
-            df_new = df.reindex(columns=all_cols, fill_value='')
-            
-            # Find Ad ID column
-            ad_id_col = next((c for c in all_cols if 'ad id' in c.lower()), None)
-            
-            if ad_id_col and ad_id_col in df_existing.columns:
-                # Update existing rows by Ad ID, append new ones
-                existing_ad_ids = set(df_existing[ad_id_col].values)
-                new_ad_ids = set(df_new[ad_id_col].values)
-                
-                # Update existing ads
-                for ad_id in new_ad_ids:
-                    if ad_id in existing_ad_ids:
-                        # Update the existing row
-                        mask = df_existing[ad_id_col] == ad_id
-                        new_row_data = df_new[df_new[ad_id_col] == ad_id].iloc[0]
-                        df_existing.loc[mask] = new_row_data.values
-                    else:
-                        # Append new ad
-                        new_row = df_new[df_new[ad_id_col] == ad_id].iloc[0:1]
-                        df_existing = pd.concat([df_existing, new_row], ignore_index=True)
-                
-                df_combined = df_existing
-                logger.info(f"✅ Ad Level sheet updated: {len(new_ad_ids & existing_ad_ids)} ads updated, {len(new_ad_ids - existing_ad_ids)} new ads added")
-            else:
-                # Fallback: just append (no Ad ID column found)
-                df_combined = pd.concat([df_existing, df_new], ignore_index=True)
-                logger.info(f"✅ Ad Level sheet updated: {len(df_new)} rows appended (no Ad ID matching)")
-            
-            # Convert combined dataframe to native types before writing
-            for col in df_combined.columns:
-                if df_combined[col].dtype == 'int64':
-                    df_combined[col] = df_combined[col].astype(object)
-                elif df_combined[col].dtype == 'float64':
-                    df_combined[col] = df_combined[col].astype(object)
-            
-            # Write back to sheet
-            ws.clear()
-            set_with_dataframe(ws, df_combined, include_column_header=True, row=1, col=1)
+            # Append new rows at the bottom
+            next_row = len(existing) + 1
+            set_with_dataframe(ws, df, include_column_header=False, row=next_row, col=1, resize=False)
+            logger.info(f"✅ Ad Level sheet updated: {len(df)} rows appended for {date_label}")
             
             return True
         except Exception as e:
@@ -418,7 +367,8 @@ class MetricsProcessor:
             return pd.DataFrame(columns=[
                 "Date", "Ad ID", "Ad Name", "Spend", "Revenue", "Orders",
                 "Impressions", "Clicks", "Link Clicks", "Landing Page Views",
-                "Add to Cart", "Initiate Checkout", "ROAS", "CPC", "CTR", "CPM"
+                "Add to Cart", "Initiate Checkout", "ROAS", "CPC", "CTR", "CPM",
+                "LC TO LPV", "LPV TO ATC", "ATC TO CI", "CI TO ORDERED", "CVR"
             ])
         records = []
         for item in ad_data:
@@ -439,10 +389,20 @@ class MetricsProcessor:
             records.append(rec)
         df = pd.DataFrame(records)
         df_agg = df.groupby(['ad_id', 'ad_name'], as_index=False).sum(numeric_only=True)
+        
+        # Calculate performance metrics
         df_agg['ROAS'] = np.where(df_agg['spend'] > 0, df_agg['purchases_value'] / df_agg['spend'], 0)
         df_agg['CPC'] = np.where(df_agg['clicks'] > 0, df_agg['spend'] / df_agg['clicks'], 0)
         df_agg['CPM'] = np.where(df_agg['impressions'] > 0, (df_agg['spend'] / df_agg['impressions']) * 1000, 0)
         df_agg['CTR'] = np.where(df_agg['impressions'] > 0, (df_agg['clicks'] / df_agg['impressions']), 0)
+        
+        # Calculate full funnel metrics
+        df_agg['LC_TO_LPV'] = np.where(df_agg['link_clicks'] > 0, (df_agg['landing_page_views'] / df_agg['link_clicks']) * 100, 0)
+        df_agg['LPV_TO_ATC'] = np.where(df_agg['landing_page_views'] > 0, (df_agg['add_to_cart'] / df_agg['landing_page_views']) * 100, 0)
+        df_agg['ATC_TO_CI'] = np.where(df_agg['add_to_cart'] > 0, (df_agg['initiate_checkout'] / df_agg['add_to_cart']) * 100, 0)
+        df_agg['CI_TO_ORDERED'] = np.where(df_agg['initiate_checkout'] > 0, (df_agg['purchases'] / df_agg['initiate_checkout']) * 100, 0)
+        df_agg['CVR'] = np.where(df_agg['link_clicks'] > 0, (df_agg['purchases'] / df_agg['link_clicks']) * 100, 0)
+        
         df_agg = df_agg.sort_values('spend', ascending=False).reset_index(drop=True)
 
         df_final = pd.DataFrame({
@@ -460,8 +420,13 @@ class MetricsProcessor:
             "Initiate Checkout": df_agg["initiate_checkout"].astype(int),
             "ROAS": df_agg["ROAS"].round(2),
             "CPC": df_agg["CPC"].apply(lambda x: f"₹{round(x, 2)}"),
-            "CTR": df_agg["CTR"].apply(lambda x: f"{round(x * 100, 2)}%"), 
-            "CPM": df_agg["CPM"].apply(lambda x: f"₹{round(x, 2)}")
+            "CTR": df_agg["CTR"].apply(lambda x: f"{round(x * 100, 2)}%"),
+            "CPM": df_agg["CPM"].apply(lambda x: f"₹{round(x, 2)}"),
+            "LC TO LPV": df_agg["LC_TO_LPV"].apply(lambda x: f"{round(x, 2)}%"),
+            "LPV TO ATC": df_agg["LPV_TO_ATC"].apply(lambda x: f"{round(x, 2)}%"),
+            "ATC TO CI": df_agg["ATC_TO_CI"].apply(lambda x: f"{round(x, 2)}%"),
+            "CI TO ORDERED": df_agg["CI_TO_ORDERED"].apply(lambda x: f"{round(x, 2)}%"),
+            "CVR": df_agg["CVR"].apply(lambda x: f"{round(x, 2)}%")
         })
         return df_final
 
