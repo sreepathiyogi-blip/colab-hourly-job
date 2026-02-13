@@ -170,9 +170,24 @@ class GoogleSheetsManager:
         try:
             ws = self.spreadsheet.worksheet(Config.HOURLY_WORKSHEET)
             existing = ws.get_all_values()
+            
+            # Get the timestamp from the new data
+            new_timestamp = df['Timestamp'].iloc[0] if not df.empty and 'Timestamp' in df.columns else None
+            
+            if new_timestamp:
+                # Check if this timestamp already exists
+                for idx, row in enumerate(existing[1:], start=2):  # Skip header
+                    if len(row) > 1 and row[1] == new_timestamp:
+                        # Update existing row instead of appending
+                        logger.info(f"⚠️  Data for {new_timestamp} already exists, updating row {idx}")
+                        set_with_dataframe(ws, df, include_column_header=False, row=idx, col=1, resize=False)
+                        logger.info("✅ Hourly sheet updated (existing row)")
+                        return True
+            
+            # No duplicate found, append new row
             row = len(existing) + 1
             set_with_dataframe(ws, df, include_column_header=(row == 1), row=row, resize=False)
-            logger.info("✅ Hourly sheet updated")
+            logger.info("✅ Hourly sheet updated (new row)")
             return True
         except Exception as e:
             logger.error(f"Hourly update failed: {e}")
