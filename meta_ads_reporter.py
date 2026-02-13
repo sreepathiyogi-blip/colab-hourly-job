@@ -56,8 +56,6 @@ class Config:
     SPREADSHEET_ID = os.environ.get('SPREADSHEET_ID', "1Ka_DkNGCVi2h_plNN55-ZETW7M9MmFpTHocE7LZcYEM")
 
     HOURLY_WORKSHEET = "Hourly Data"
-    DAILY_WORKSHEET = "Daily Sales Report"
-    AD_LEVEL_WORKSHEET = "Ad Level Daily Sales"
 
     IST = timezone(timedelta(hours=5, minutes=30))
 
@@ -116,11 +114,10 @@ class GoogleSheetsManager:
             return False
 
     def _ensure_worksheets_exist(self):
-        for ws_name in [Config.HOURLY_WORKSHEET, Config.DAILY_WORKSHEET, Config.AD_LEVEL_WORKSHEET]:
-            try:
-                self.spreadsheet.worksheet(ws_name)
-            except Exception:
-                self.spreadsheet.add_worksheet(title=ws_name, rows=20000, cols=50)
+        try:
+            self.spreadsheet.worksheet(Config.HOURLY_WORKSHEET)
+        except Exception:
+            self.spreadsheet.add_worksheet(title=Config.HOURLY_WORKSHEET, rows=20000, cols=50)
 
     def get_last_hourly_timestamp(self) -> Optional[datetime]:
         """
@@ -180,69 +177,6 @@ class GoogleSheetsManager:
         except Exception as e:
             logger.error(f"Hourly update failed: {e}")
             self.write_error(f"Hourly update: {e}")
-            return False
-
-    def update_daily(self, df: pd.DataFrame) -> bool:
-        try:
-            ws = self.spreadsheet.worksheet(Config.DAILY_WORKSHEET)
-            existing = ws.get_all_values()
-            current_date = datetime.now(Config.IST).strftime('%m/%d/%Y')
-            update_row = None
-            for idx, row in enumerate(existing[1:], start=2):
-                if row and row[0] == current_date:
-                    update_row = idx
-                    break
-            if update_row:
-                set_with_dataframe(ws, df, include_column_header=False, row=update_row, col=1)
-                logger.info(f"✅ Updated daily summary for {current_date}")
-            else:
-                row = len(existing) + 1
-                set_with_dataframe(ws, df, include_column_header=(row == 1), row=row)
-                logger.info(f"✅ Added new daily summary for {current_date}")
-            return True
-        except Exception as e:
-            logger.error(f"Daily update failed: {e}")
-            self.write_error(f"Daily update: {e}")
-            return False
-
-    def update_ad_level(self, df: pd.DataFrame, date_label: str) -> bool:
-        """
-        Updates Ad Level Daily Sales sheet.
-        Appends new rows for each date without deleting previous data.
-        """
-        try:
-            ws = self.spreadsheet.worksheet(Config.AD_LEVEL_WORKSHEET)
-            existing = ws.get_all_values()
-            
-            # Ensure new data has Date column
-            if 'Date' not in df.columns:
-                df.insert(0, 'Date', date_label)
-            else:
-                df['Date'] = date_label
-            
-            # Convert DataFrame to native Python types to avoid int64 serialization issues
-            df = df.copy()
-            for col in df.columns:
-                if df[col].dtype == 'int64':
-                    df[col] = df[col].astype(int)
-                elif df[col].dtype == 'float64':
-                    df[col] = df[col].astype(float)
-            
-            # If sheet is empty, write with headers
-            if not existing or len(existing) == 0:
-                set_with_dataframe(ws, df, include_column_header=True, row=1, col=1)
-                logger.info(f"✅ Ad Level sheet initialized with {len(df)} rows for {date_label}")
-                return True
-            
-            # Append new rows at the bottom
-            next_row = len(existing) + 1
-            set_with_dataframe(ws, df, include_column_header=False, row=next_row, col=1, resize=False)
-            logger.info(f"✅ Ad Level sheet updated: {len(df)} rows appended for {date_label}")
-            
-            return True
-        except Exception as e:
-            logger.error(f"Failed to update Ad Level sheet: {e}")
-            self.write_error(f"Ad Level update: {e}")
             return False
 
 # ============================================
@@ -337,16 +271,16 @@ class MetaAPIClient:
 
     def fetch_ad_insights(self, account_id: str, target_hour: Optional[datetime] = None) -> List[Dict]:
         """
-        Fetch ad-level insights for today (no time_range support).
+        Fetch account-level insights for today.
         Note: Meta API only supports 'today' preset, so target_hour is logged but not used in API call
         """
-        fields = Config.COMMON_FIELDS + ',ad_id,ad_name'
+        fields = Config.COMMON_FIELDS
         url = f"{self.base}/{account_id}/insights"
         params = {
             'access_token': self.access_token,
             'fields': fields,
             'date_preset': 'today',
-            'level': 'ad'
+            'level': 'account'
         }
         
         if target_hour:
@@ -463,80 +397,6 @@ class MetricsProcessor:
             'CPM': f"₹ {round(metrics['CPM'],2)}"
         }])
 
-    @staticmethod
-    def create_daily_report(metrics: Dict) -> pd.DataFrame:
-        hourly_df = MetricsProcessor.create_hourly_report(metrics, datetime.now(Config.IST))
-        return hourly_df.drop(columns=['Timestamp'])
-
-    @staticmethod
-    def create_ad_level_report(ad_data: List[Dict], today_str: str) -> pd.DataFrame:
-        if not ad_data:
-            return pd.DataFrame(columns=[
-                "Date", "Ad ID", "Ad Name", "Spend", "Revenue", "Orders",
-                "Impressions", "Clicks", "Link Clicks", "Landing Page Views",
-                "Add to Cart", "Initiate Checkout", "ROAS", "CPC", "CTR", "CPM",
-                "LC TO LPV", "LPV TO ATC", "ATC TO CI", "CI TO ORDERED", "CVR"
-            ])
-        records = []
-        for item in ad_data:
-            acts = MetricsProcessor.extract_actions(item)
-            rec = {
-                'ad_id': item.get('ad_id',''),
-                'ad_name': item.get('ad_name',''),
-                'spend': MetricsProcessor._safe_float(item.get('spend')),
-                'impressions': MetricsProcessor._safe_int(item.get('impressions')),
-                'clicks': MetricsProcessor._safe_int(item.get('clicks')),
-                'link_clicks': acts['link_clicks'],
-                'landing_page_views': acts['landing_page_views'],
-                'add_to_cart': acts['add_to_cart'],
-                'initiate_checkout': acts['initiate_checkout'],
-                'purchases': acts['purchases'],
-                'purchases_value': MetricsProcessor.extract_purchase_value(item)
-            }
-            records.append(rec)
-        df = pd.DataFrame(records)
-        df_agg = df.groupby(['ad_id', 'ad_name'], as_index=False).sum(numeric_only=True)
-        
-        # Calculate performance metrics
-        df_agg['ROAS'] = np.where(df_agg['spend'] > 0, df_agg['purchases_value'] / df_agg['spend'], 0)
-        df_agg['CPC'] = np.where(df_agg['clicks'] > 0, df_agg['spend'] / df_agg['clicks'], 0)
-        df_agg['CPM'] = np.where(df_agg['impressions'] > 0, (df_agg['spend'] / df_agg['impressions']) * 1000, 0)
-        df_agg['CTR'] = np.where(df_agg['impressions'] > 0, (df_agg['clicks'] / df_agg['impressions']), 0)
-        
-        # Calculate full funnel metrics
-        df_agg['LC_TO_LPV'] = np.where(df_agg['link_clicks'] > 0, (df_agg['landing_page_views'] / df_agg['link_clicks']) * 100, 0)
-        df_agg['LPV_TO_ATC'] = np.where(df_agg['landing_page_views'] > 0, (df_agg['add_to_cart'] / df_agg['landing_page_views']) * 100, 0)
-        df_agg['ATC_TO_CI'] = np.where(df_agg['add_to_cart'] > 0, (df_agg['initiate_checkout'] / df_agg['add_to_cart']) * 100, 0)
-        df_agg['CI_TO_ORDERED'] = np.where(df_agg['initiate_checkout'] > 0, (df_agg['purchases'] / df_agg['initiate_checkout']) * 100, 0)
-        df_agg['CVR'] = np.where(df_agg['link_clicks'] > 0, (df_agg['purchases'] / df_agg['link_clicks']) * 100, 0)
-        
-        df_agg = df_agg.sort_values('spend', ascending=False).reset_index(drop=True)
-
-        df_final = pd.DataFrame({
-            "Date": today_str,
-            "Ad ID": df_agg["ad_id"],
-            "Ad Name": df_agg["ad_name"],
-            "Spend": df_agg["spend"].apply(lambda x: f"₹{round(x, 2)}"),
-            "Revenue": df_agg["purchases_value"].apply(lambda x: f"₹{round(x, 2)}"),
-            "Orders": df_agg["purchases"].astype(int),
-            "Impressions": df_agg["impressions"].astype(int),
-            "Clicks": df_agg["clicks"].astype(int),
-            "Link Clicks": df_agg["link_clicks"].astype(int),
-            "Landing Page Views": df_agg["landing_page_views"].astype(int),
-            "Add to Cart": df_agg["add_to_cart"].astype(int),
-            "Initiate Checkout": df_agg["initiate_checkout"].astype(int),
-            "ROAS": df_agg["ROAS"].round(2),
-            "CPC": df_agg["CPC"].apply(lambda x: f"₹{round(x, 2)}"),
-            "CTR": df_agg["CTR"].apply(lambda x: f"{round(x * 100, 2)}%"),
-            "CPM": df_agg["CPM"].apply(lambda x: f"₹{round(x, 2)}"),
-            "LC TO LPV": df_agg["LC_TO_LPV"].apply(lambda x: f"{round(x, 2)}%"),
-            "LPV TO ATC": df_agg["LPV_TO_ATC"].apply(lambda x: f"{round(x, 2)}%"),
-            "ATC TO CI": df_agg["ATC_TO_CI"].apply(lambda x: f"{round(x, 2)}%"),
-            "CI TO ORDERED": df_agg["CI_TO_ORDERED"].apply(lambda x: f"{round(x, 2)}%"),
-            "CVR": df_agg["CVR"].apply(lambda x: f"{round(x, 2)}%")
-        })
-        return df_final
-
 # ============================================
 # RUNNER (UPDATED WITH CATCHUP)
 # ============================================
@@ -565,17 +425,7 @@ class MetaAdsTracker:
             logger.warning('⚠️  No ad-level data returned for this hour')
             return False
         
-        today_str = target_hour.strftime('%m/%d/%Y')
-        
-        # Create ad-level report
-        ad_df = self.processor.create_ad_level_report(all_ad_items, today_str)
-        if sheets_ok:
-            try:
-                self.sheets_manager.update_ad_level(ad_df, today_str)
-            except Exception as e:
-                logger.error(f"❌ Failed to update ad-level sheet: {e}")
-        
-        # Aggregate metrics for hourly/daily
+        # Aggregate metrics for hourly
         metrics = {
             'Spend': 0.0,
             'Purchases Value': 0.0,
@@ -619,14 +469,6 @@ class MetaAdsTracker:
             except Exception as e:
                 logger.error(f"❌ Failed to update hourly sheet: {e}")
         
-        # Update daily summary
-        daily_df = hourly_df.drop(columns=['Timestamp'])
-        if sheets_ok:
-            try:
-                self.sheets_manager.update_daily(daily_df)
-            except Exception as e:
-                logger.error(f"❌ Failed to update daily sheet: {e}")
-        
         logger.info(f"✅ Completed processing for {target_hour.strftime('%Y-%m-%d %H:00 IST')}")
         return True
 
@@ -667,25 +509,6 @@ class MetaAdsTracker:
             except Exception as e:
                 logger.error(f"❌ Error processing {hour.strftime('%Y-%m-%d %H:00')}: {e}")
                 continue
-        
-        # Save ad-level CSV locally for Colab download (last hour only)
-        if success_count > 0:
-            try:
-                today_str = datetime.now(Config.IST).strftime('%m/%d/%Y')
-                last_hour_items = []
-                for acct in Config.AD_ACCOUNT_IDS:
-                    last_hour_items.extend(self.api_client.fetch_ad_insights(acct))
-                
-                if last_hour_items:
-                    ad_df = self.processor.create_ad_level_report(last_hour_items, today_str)
-                    ad_df.to_csv('ad_level.csv', index=False)
-                    logger.info("💾 Saved ad_level.csv")
-                    
-                    if IN_COLAB:
-                        from google.colab import files
-                        files.download('ad_level.csv')
-            except Exception as e:
-                logger.warning(f"⚠️  Could not save CSV: {e}")
         
         logger.info(f"\n{'='*60}")
         logger.info(f"✅ TRACKER COMPLETED")
