@@ -1,4 +1,4 @@
-name: Run meta_ads_reporter hourly
+name: Meta Ads Reporter - Hourly
 
 on:
   schedule:
@@ -6,6 +6,12 @@ on:
     - cron: "0 * * * *"
   
   workflow_dispatch:  # Manual trigger option
+    inputs:
+      force_full_refresh:
+        description: 'Force full data refresh'
+        required: false
+        type: boolean
+        default: false
 
 # Ensure only one workflow runs at a time
 concurrency:
@@ -15,7 +21,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 10  # Prevent hanging workflows
+    timeout-minutes: 15  # Slightly increased for safety
     
     steps:
       - name: Checkout repository
@@ -24,8 +30,16 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
-          cache: 'pip'  # Cache pip dependencies for faster runs
+          python-version: "3.11"  # Using newer Python version
+          cache: 'pip'
+      
+      - name: Cache Python dependencies
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
       
       - name: Install dependencies
         run: |
@@ -33,52 +47,115 @@ jobs:
           if [ -f requirements.txt ]; then 
             pip install -r requirements.txt
           else
-            pip install pandas numpy requests gspread gspread-dataframe google-auth google-auth-oauthlib google-auth-httplib2
+            # Fallback dependencies with version pinning for stability
+            pip install pandas>=2.0.0 numpy>=1.24.0 requests>=2.31.0 \
+                       gspread>=5.12.0 gspread-dataframe>=3.3.0 \
+                       google-auth>=2.23.0 google-auth-oauthlib>=1.1.0 \
+                       google-auth-httplib2>=0.1.1
           fi
+      
+      - name: Verify dependencies
+        run: |
+          echo "📦 Installed packages:"
+          pip list | grep -E "pandas|numpy|requests|gspread|google-auth"
       
       - name: Setup Google credentials
         run: |
           echo '${{ secrets.GOOGLE_CREDENTIALS }}' > service-account.json
-          chmod 600 service-account.json  # Secure file permissions
+          chmod 600 service-account.json
+          # Validate JSON structure
+          python -c "import json; json.load(open('service-account.json'))" || \
+            (echo "❌ Invalid Google credentials JSON" && exit 1)
+      
+      - name: Validate environment
+        run: |
+          echo "🔍 Environment validation:"
+          echo "- Python version: $(python --version)"
+          echo "- Timezone: ${TZ}"
+          echo "- Force refresh: ${{ inputs.force_full_refresh }}"
+          
+          # Check if required secrets are set (without exposing values)
+          [ -n "$META_ACCESS_TOKEN" ] && echo "✅ META_ACCESS_TOKEN is set" || \
+            (echo "❌ META_ACCESS_TOKEN is missing" && exit 1)
+          [ -n "$SPREADSHEET_ID" ] && echo "✅ SPREADSHEET_ID is set" || \
+            (echo "❌ SPREADSHEET_ID is missing" && exit 1)
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: service-account.json
+          META_ACCESS_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
+          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
+          TZ: Asia/Kolkata
       
       - name: Run meta_ads_reporter.py
         env:
           GOOGLE_APPLICATION_CREDENTIALS: service-account.json
           META_ACCESS_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
-          TZ: Asia/Kolkata  # Set timezone for logs
+          FORCE_REFRESH: ${{ inputs.force_full_refresh }}
+          TZ: Asia/Kolkata
+          PYTHONUNBUFFERED: "1"  # Force unbuffered output for real-time logs
         run: |
           echo "=============================================="
-          echo "🚀 DAILY SALES TRACKER - HOURLY UPDATE"
+          echo "🚀 META ADS REPORTER - HOURLY UPDATE"
           echo "=============================================="
-          echo "📅 Current Date: $(date '+%Y-%m-%d')"
-          echo "🕐 Current Time (IST): $(TZ=Asia/Kolkata date '+%H:%M:%S %Z')"
-          echo "🕐 Current Time (UTC): $(date -u '+%H:%M:%S %Z')"
-          echo "📊 Workflow Run: #${{ github.run_number }}"
-          echo "📋 Updating: Hourly Data + Daily Sales Report"
+          echo "📅 Date: $(TZ=Asia/Kolkata date '+%Y-%m-%d')"
+          echo "🕐 Time (IST): $(TZ=Asia/Kolkata date '+%H:%M:%S %Z')"
+          echo "🕐 Time (UTC): $(date -u '+%H:%M:%S %Z')"
+          echo "📊 Run: #${{ github.run_number }} (Attempt: ${{ github.run_attempt }})"
+          echo "🔄 Mode: ${{ inputs.force_full_refresh == true && 'FULL REFRESH' || 'INCREMENTAL' }}"
           echo "=============================================="
           echo ""
           
-          python meta_ads_reporter.py
+          # Run with timeout and capture exit code
+          timeout 600 python meta_ads_reporter.py || EXIT_CODE=$?
+          
+          if [ ${EXIT_CODE:-0} -eq 124 ]; then
+            echo "⚠️  Script timed out after 10 minutes"
+            exit 1
+          elif [ ${EXIT_CODE:-0} -ne 0 ]; then
+            echo "❌ Script failed with exit code: ${EXIT_CODE}"
+            exit ${EXIT_CODE}
+          fi
           
           echo ""
           echo "=============================================="
           echo "✅ HOURLY UPDATE COMPLETED"
-          echo "🕐 Finished at (IST): $(TZ=Asia/Kolkata date '+%H:%M:%S %Z')"
-          echo "📊 Check sheets: Hourly Data & Daily Sales Report"
+          echo "🕐 Finished (IST): $(TZ=Asia/Kolkata date '+%H:%M:%S %Z')"
+          echo "⏱️  Duration: $SECONDS seconds"
+          echo "📊 Sheets updated: Hourly Data & Daily Sales Report"
           echo "=============================================="
       
       - name: Cleanup credentials
         if: always()
-        run: rm -f service-account.json
+        run: |
+          rm -f service-account.json
+          echo "🧹 Credentials cleaned up"
       
-      # Optional: Upload logs on failure for debugging
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: error-logs-${{ github.run_number }}
+          name: error-logs-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             *.log
             *.txt
+            *.err
           retention-days: 7
+          if-no-files-found: ignore
+      
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "=============================================="
+          echo "❌ WORKFLOW FAILED"
+          echo "=============================================="
+          echo "📊 Run ID: ${{ github.run_id }}"
+          echo "🔗 URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          echo "💡 Check uploaded artifacts for detailed logs"
+          echo "=============================================="
+      
+      # Optional: Add success metrics
+      - name: Report success
+        if: success()
+        run: |
+          echo "✅ Workflow completed successfully"
+          echo "📈 Next run scheduled in 1 hour (at :00 minute mark)"
