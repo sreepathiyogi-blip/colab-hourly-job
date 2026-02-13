@@ -1,7 +1,7 @@
-# FULLY PATCHED META ADS TRACKER SCRIPT
+# FULLY PATCHED META ADS TRACKER SCRIPT WITH CATCHUP LOGIC
 # Designed for GitHub Actions hourly cron job execution
+# NEW: Automatically detects and processes missed hours
 # Includes: formatting fixes, CTR f-string bug fixed, ad-level appends daily data
-# UPDATED: Ad-level appends new rows for each date (no deletion)
 
 import sys
 import os
@@ -65,6 +65,10 @@ class Config:
     MAX_RETRIES = 3
     RETRY_DELAY = 5
     COMMON_FIELDS = "date_start,date_stop,impressions,clicks,spend,actions,action_values,cpm,cpc,ctr"
+    
+    # NEW: Catchup configuration
+    MAX_CATCHUP_HOURS = 24  # Don't go back more than 24 hours
+    ENABLE_AUTO_CATCHUP = True  # Set to False to disable catchup
 
 # ============================================
 # LOGGING
@@ -117,6 +121,43 @@ class GoogleSheetsManager:
                 self.spreadsheet.worksheet(ws_name)
             except Exception:
                 self.spreadsheet.add_worksheet(title=ws_name, rows=20000, cols=50)
+
+    def get_last_hourly_timestamp(self) -> Optional[datetime]:
+        """
+        NEW: Gets the last recorded timestamp from Hourly Data sheet
+        Returns datetime object or None if no data exists
+        """
+        try:
+            ws = self.spreadsheet.worksheet(Config.HOURLY_WORKSHEET)
+            all_values = ws.get_all_values()
+            
+            if len(all_values) <= 1:  # Only header or empty
+                logger.info("📝 No previous hourly data found")
+                return None
+            
+            # Get last row's timestamp (column B, index 1)
+            last_row = all_values[-1]
+            if len(last_row) < 2 or not last_row[1]:
+                logger.warning("⚠️  Last row has no timestamp")
+                return None
+            
+            timestamp_str = last_row[1]  # Timestamp column
+            
+            # Try parsing different formats
+            for fmt in ['%m/%d/%Y %H:%M:%S', '%Y-%m-%d %H:%M:%S', '%m/%d/%Y %H:%M']:
+                try:
+                    # Parse as naive datetime, then localize to IST
+                    naive_dt = datetime.strptime(timestamp_str, fmt)
+                    return naive_dt.replace(tzinfo=Config.IST)
+                except ValueError:
+                    continue
+            
+            logger.warning(f"⚠️  Could not parse timestamp: {timestamp_str}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ Error getting last timestamp: {e}")
+            return None
 
     def write_error(self, error_message: str):
         try:
@@ -205,6 +246,64 @@ class GoogleSheetsManager:
             return False
 
 # ============================================
+# CATCHUP MANAGER (NEW)
+# ============================================
+class CatchupManager:
+    """Handles detection and processing of missed hourly runs"""
+    
+    @staticmethod
+    def get_hours_to_process(last_timestamp: Optional[datetime]) -> List[datetime]:
+        """
+        Determines which hours need to be processed based on last recorded timestamp
+        Returns list of datetime objects (hour-aligned, IST timezone)
+        """
+        current_time = datetime.now(Config.IST)
+        current_hour = current_time.replace(minute=0, second=0, microsecond=0)
+        
+        # Check for manual catchup hours from environment
+        manual_catchup = os.environ.get('CATCHUP_HOURS', '').strip()
+        if manual_catchup and manual_catchup.isdigit():
+            hours_back = int(manual_catchup)
+            if hours_back > 0:
+                logger.info(f"🔧 Manual catchup mode: {hours_back} hours")
+                hours = []
+                for i in range(hours_back, 0, -1):
+                    hours.append(current_hour - timedelta(hours=i))
+                hours.append(current_hour)
+                return hours
+        
+        # Auto-detect mode
+        if not Config.ENABLE_AUTO_CATCHUP:
+            logger.info("✅ Auto-catchup disabled, processing current hour only")
+            return [current_hour]
+        
+        if last_timestamp is None:
+            logger.info("📝 First run detected, processing current hour only")
+            return [current_hour]
+        
+        # Calculate hours since last run
+        hours_diff = int((current_hour - last_timestamp).total_seconds() / 3600)
+        
+        if hours_diff <= 1:
+            logger.info("✅ No missed hours detected")
+            return [current_hour]
+        
+        # Cap catchup to prevent excessive API calls
+        if hours_diff > Config.MAX_CATCHUP_HOURS:
+            logger.warning(f"⚠️  {hours_diff} hours missed, limiting to last {Config.MAX_CATCHUP_HOURS} hours")
+            hours_diff = Config.MAX_CATCHUP_HOURS
+        
+        logger.info(f"🔄 Catchup mode: Processing {hours_diff} hour(s)")
+        
+        # Generate list of missed hours + current hour
+        hours_to_process = []
+        for i in range(hours_diff, 0, -1):
+            hours_to_process.append(current_hour - timedelta(hours=i))
+        hours_to_process.append(current_hour)
+        
+        return hours_to_process
+
+# ============================================
 # META API CLIENT
 # ============================================
 class MetaAPIClient:
@@ -236,8 +335,11 @@ class MetaAPIClient:
                     break
         return results
 
-    def fetch_ad_insights(self, account_id: str) -> List[Dict]:
-        """Fetch ad-level insights for today (no time_range support)."""
+    def fetch_ad_insights(self, account_id: str, target_hour: Optional[datetime] = None) -> List[Dict]:
+        """
+        Fetch ad-level insights for today (no time_range support).
+        Note: Meta API only supports 'today' preset, so target_hour is logged but not used in API call
+        """
         fields = Config.COMMON_FIELDS + ',ad_id,ad_name'
         url = f"{self.base}/{account_id}/insights"
         params = {
@@ -246,6 +348,10 @@ class MetaAPIClient:
             'date_preset': 'today',
             'level': 'ad'
         }
+        
+        if target_hour:
+            logger.info(f"📊 Fetching data for {target_hour.strftime('%Y-%m-%d %H:00')} (Note: API returns 'today' data)")
+        
         return self._paginate(url, params)
 
 # ============================================
@@ -333,10 +439,11 @@ class MetricsProcessor:
         }
 
     @staticmethod
-    def create_hourly_report(metrics: Dict, timestamp: str) -> pd.DataFrame:
+    def create_hourly_report(metrics: Dict, target_hour: datetime) -> pd.DataFrame:
+        """Create hourly report with specific timestamp"""
         return pd.DataFrame([{
-            'Date': datetime.now(Config.IST).strftime('%m/%d/%Y'),
-            'Timestamp': timestamp,
+            'Date': target_hour.strftime('%m/%d/%Y'),
+            'Timestamp': target_hour.strftime('%m/%d/%Y %H:%M:%S'),
             'Spend': f"₹{round(metrics['Spend'],2)}",
             'Purchases Value': f"₹{round(metrics['Purchases Value'],2)}",
             'Purchases': metrics['Purchases'],
@@ -358,7 +465,7 @@ class MetricsProcessor:
 
     @staticmethod
     def create_daily_report(metrics: Dict) -> pd.DataFrame:
-        hourly_df = MetricsProcessor.create_hourly_report(metrics, datetime.now(Config.IST).strftime('%m/%d/%Y %H:%M:%S'))
+        hourly_df = MetricsProcessor.create_hourly_report(metrics, datetime.now(Config.IST))
         return hourly_df.drop(columns=['Timestamp'])
 
     @staticmethod
@@ -431,36 +538,44 @@ class MetricsProcessor:
         return df_final
 
 # ============================================
-# RUNNER
+# RUNNER (UPDATED WITH CATCHUP)
 # ============================================
 class MetaAdsTracker:
     def __init__(self):
         self.sheets_manager = GoogleSheetsManager()
         self.api_client = MetaAPIClient(Config.ACCESS_TOKEN)
         self.processor = MetricsProcessor()
+        self.catchup_manager = CatchupManager()
 
-    def run(self) -> bool:
-        logger.info("META ADS TRACKER STARTED")
-        sheets_ok = self.sheets_manager.setup()
-        if not self.api_client.access_token:
-            token = input('Enter Meta ACCESS TOKEN (or set META_ACCESS_TOKEN env): ').strip()
-            self.api_client.access_token = token
+    def process_single_hour(self, target_hour: datetime, sheets_ok: bool) -> bool:
+        """
+        Process data for a single hour
+        """
+        logger.info(f"\n{'='*60}")
+        logger.info(f"⏰ Processing: {target_hour.strftime('%Y-%m-%d %H:00 IST')}")
+        logger.info(f"{'='*60}")
+        
         all_ad_items = []
         for acct in Config.AD_ACCOUNT_IDS:
-            items = self.api_client.fetch_ad_insights(acct)
-            logger.info(f"Fetched {len(items)} records from {acct}")
+            items = self.api_client.fetch_ad_insights(acct, target_hour)
+            logger.info(f"📊 Fetched {len(items)} records from {acct}")
             all_ad_items.extend(items)
+        
         if not all_ad_items:
-            logger.warning('No ad-level data returned.')
+            logger.warning('⚠️  No ad-level data returned for this hour')
             return False
-        today_str = datetime.now(Config.IST).strftime('%m/%d/%Y')
+        
+        today_str = target_hour.strftime('%m/%d/%Y')
+        
+        # Create ad-level report
         ad_df = self.processor.create_ad_level_report(all_ad_items, today_str)
         if sheets_ok:
             try:
                 self.sheets_manager.update_ad_level(ad_df, today_str)
             except Exception as e:
-                logger.error(f"Failed to update ad-level sheet: {e}")
-        # aggregate metrics for daily/hourly
+                logger.error(f"❌ Failed to update ad-level sheet: {e}")
+        
+        # Aggregate metrics for hourly/daily
         metrics = {
             'Spend': 0.0,
             'Purchases Value': 0.0,
@@ -471,6 +586,7 @@ class MetaAdsTracker:
             'Add to Cart': 0,
             'Initiate Checkout': 0
         }
+        
         for it in all_ad_items:
             metrics['Spend'] += MetricsProcessor._safe_float(it.get('spend'))
             metrics['Impressions'] += MetricsProcessor._safe_int(it.get('impressions'))
@@ -481,52 +597,96 @@ class MetaAdsTracker:
             metrics['Initiate Checkout'] += acts.get('initiate_checkout',0)
             metrics['Purchases'] += acts.get('purchases',0)
             metrics['Purchases Value'] += MetricsProcessor.extract_purchase_value(it)
+        
         metrics['ROAS'] = metrics['Purchases Value'] / metrics['Spend'] if metrics['Spend']>0 else 0
         metrics['CPC'] = metrics['Spend'] / metrics['Link Clicks'] if metrics['Link Clicks']>0 else 0
         metrics['CPM'] = (metrics['Spend'] / metrics['Impressions'])*1000 if metrics['Impressions']>0 else 0
         metrics['CTR'] = (metrics['Link Clicks'] / metrics['Impressions'])*100 if metrics['Impressions']>0 else 0
-        hourly_df = pd.DataFrame([{
-            'Date': datetime.now(Config.IST).strftime('%m/%d/%Y'),
-            'Timestamp': datetime.now(Config.IST).strftime('%m/%d/%Y %H:%M:%S'),
-            'Spend': f"₹{round(metrics['Spend'],2)}",
-            'Purchases Value': f"₹{round(metrics['Purchases Value'],2)}",
-            'Purchases': metrics['Purchases'],
-            'Impressions': metrics['Impressions'],
-            'Link Clicks': metrics['Link Clicks'],
-            'Landing Page Views': metrics['Landing Page Views'],
-            'Add to Cart': metrics['Add to Cart'],
-            'Initiate Checkout': metrics['Initiate Checkout'],
-            'ROAS': round(metrics['ROAS'],2),
-            'CPC': f"₹{round(metrics['CPC'],2)}",
-            'CTR': f"{round(metrics['CTR'],2)}%",
-            'LC TO LPV': f"{round((metrics['Landing Page Views']/metrics['Link Clicks'])*100,2)}%" if metrics['Link Clicks']>0 else "0.00%",
-            'LPV TO ATC': f"{round((metrics['Add to Cart']/metrics['Landing Page Views'])*100,2)}%" if metrics['Landing Page Views']>0 else "0.00%",
-            'ATC TO CI': f"{round((metrics['Initiate Checkout']/metrics['Add to Cart'])*100,2)}%" if metrics['Add to Cart']>0 else "0.00%",
-            'CI TO ORDERED': f"{round((metrics['Purchases']/metrics['Initiate Checkout'])*100,2)}%" if metrics['Initiate Checkout']>0 else "0.00%",
-            'CVR': f"{round((metrics['Purchases']/metrics['Link Clicks'])*100,2)}%" if metrics['Link Clicks']>0 else "0.00%",
-            'CPM': f"₹ {round(metrics['CPM'],2)}"
-        }])
+        
+        # Create hourly report with target hour timestamp
+        hourly_df = MetricsProcessor.create_hourly_report(metrics, target_hour)
+        
         if sheets_ok:
             try:
                 self.sheets_manager.update_hourly(hourly_df)
             except Exception as e:
-                logger.error(f"Failed to update hourly sheet: {e}")
+                logger.error(f"❌ Failed to update hourly sheet: {e}")
+        
+        # Update daily summary
         daily_df = hourly_df.drop(columns=['Timestamp'])
         if sheets_ok:
             try:
                 self.sheets_manager.update_daily(daily_df)
             except Exception as e:
-                logger.error(f"Failed to update daily sheet: {e}")
-        # save ad-level CSV locally for Colab download
-        try:
-            ad_df.to_csv('ad_level.csv', index=False)
-            if IN_COLAB:
-                from google.colab import files
-                files.download('ad_level.csv')
-        except Exception:
-            pass
-        logger.info('Done')
+                logger.error(f"❌ Failed to update daily sheet: {e}")
+        
+        logger.info(f"✅ Completed processing for {target_hour.strftime('%Y-%m-%d %H:00 IST')}")
         return True
+
+    def run(self) -> bool:
+        logger.info("🚀 META ADS TRACKER STARTED (WITH CATCHUP)")
+        logger.info(f"📅 Current time: {datetime.now(Config.IST).strftime('%Y-%m-%d %H:%M:%S IST')}")
+        
+        sheets_ok = self.sheets_manager.setup()
+        
+        if not self.api_client.access_token:
+            token = input('Enter Meta ACCESS TOKEN (or set META_ACCESS_TOKEN env): ').strip()
+            self.api_client.access_token = token
+        
+        # NEW: Detect missed hours
+        last_timestamp = None
+        if sheets_ok:
+            last_timestamp = self.sheets_manager.get_last_hourly_timestamp()
+            if last_timestamp:
+                logger.info(f"📊 Last recorded run: {last_timestamp.strftime('%Y-%m-%d %H:%M:%S IST')}")
+        
+        hours_to_process = self.catchup_manager.get_hours_to_process(last_timestamp)
+        
+        logger.info(f"\n📋 PROCESSING PLAN:")
+        logger.info(f"   Total hours to process: {len(hours_to_process)}")
+        for idx, hour in enumerate(hours_to_process, 1):
+            logger.info(f"   {idx}. {hour.strftime('%Y-%m-%d %H:00 IST')}")
+        logger.info("")
+        
+        # Process each hour
+        success_count = 0
+        for hour in hours_to_process:
+            try:
+                if self.process_single_hour(hour, sheets_ok):
+                    success_count += 1
+                # Small delay between hours to avoid rate limiting
+                if len(hours_to_process) > 1:
+                    time.sleep(2)
+            except Exception as e:
+                logger.error(f"❌ Error processing {hour.strftime('%Y-%m-%d %H:00')}: {e}")
+                continue
+        
+        # Save ad-level CSV locally for Colab download (last hour only)
+        if success_count > 0:
+            try:
+                today_str = datetime.now(Config.IST).strftime('%m/%d/%Y')
+                last_hour_items = []
+                for acct in Config.AD_ACCOUNT_IDS:
+                    last_hour_items.extend(self.api_client.fetch_ad_insights(acct))
+                
+                if last_hour_items:
+                    ad_df = self.processor.create_ad_level_report(last_hour_items, today_str)
+                    ad_df.to_csv('ad_level.csv', index=False)
+                    logger.info("💾 Saved ad_level.csv")
+                    
+                    if IN_COLAB:
+                        from google.colab import files
+                        files.download('ad_level.csv')
+            except Exception as e:
+                logger.warning(f"⚠️  Could not save CSV: {e}")
+        
+        logger.info(f"\n{'='*60}")
+        logger.info(f"✅ TRACKER COMPLETED")
+        logger.info(f"   Processed: {success_count}/{len(hours_to_process)} hours")
+        logger.info(f"   Finished at: {datetime.now(Config.IST).strftime('%Y-%m-%d %H:%M:%S IST')}")
+        logger.info(f"{'='*60}\n")
+        
+        return success_count > 0
 
 # ============================================
 # ENTRY POINT
@@ -535,6 +695,6 @@ if __name__ == '__main__':
     tracker = MetaAdsTracker()
     ok = tracker.run()
     if ok:
-        print('Script completed successfully')
+        print('✅ Script completed successfully')
     else:
-        print('Script finished with no data or errors')
+        print('⚠️  Script finished with no data or errors')
