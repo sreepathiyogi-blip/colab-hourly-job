@@ -1,19 +1,20 @@
-name: Meta Ads Reporter - Hourly
+name: Meta Ads Reporter - Hourly (Self-Healing)
 
 on:
   schedule:
-    # Runs every hour at minute 0 (UTC time)
+    # Primary: Every hour at minute 0
     - cron: "0 * * * *"
+    # Backup: Every hour at minute 30 (catches missed runs)
+    - cron: "30 * * * *"
   
-  workflow_dispatch:  # Manual trigger option
+  workflow_dispatch:
     inputs:
-      force_full_refresh:
-        description: 'Force full data refresh'
+      catchup_hours:
+        description: 'Hours to catch up (blank = auto-detect)'
         required: false
-        type: boolean
-        default: false
+        type: string
+        default: ''
 
-# Ensure only one workflow runs at a time
 concurrency:
   group: meta-ads-reporter
   cancel-in-progress: false
@@ -21,7 +22,7 @@ concurrency:
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 15  # Slightly increased for safety
+    timeout-minutes: 15
     
     steps:
       - name: Checkout repository
@@ -30,16 +31,8 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"  # Using newer Python version
+          python-version: "3.11"
           cache: 'pip'
-      
-      - name: Cache Python dependencies
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
       
       - name: Install dependencies
         run: |
@@ -47,52 +40,41 @@ jobs:
           if [ -f requirements.txt ]; then 
             pip install -r requirements.txt
           else
-            # Fallback dependencies with version pinning for stability
-            pip install pandas>=2.0.0 numpy>=1.24.0 requests>=2.31.0 \
-                       gspread>=5.12.0 gspread-dataframe>=3.3.0 \
-                       google-auth>=2.23.0 google-auth-oauthlib>=1.1.0 \
-                       google-auth-httplib2>=0.1.1
+            pip install pandas numpy requests gspread gspread-dataframe google-auth google-auth-oauthlib google-auth-httplib2
           fi
-      
-      - name: Verify dependencies
-        run: |
-          echo "📦 Installed packages:"
-          pip list | grep -E "pandas|numpy|requests|gspread|google-auth"
       
       - name: Setup Google credentials
         run: |
           echo '${{ secrets.GOOGLE_CREDENTIALS }}' > service-account.json
           chmod 600 service-account.json
-          # Validate JSON structure
-          python -c "import json; json.load(open('service-account.json'))" || \
-            (echo "❌ Invalid Google credentials JSON" && exit 1)
       
-      - name: Validate environment
+      # NEW: Check for missed hours and catch up
+      - name: Detect missed runs
+        id: catchup
         run: |
-          echo "🔍 Environment validation:"
-          echo "- Python version: $(python --version)"
-          echo "- Timezone: ${TZ}"
-          echo "- Force refresh: ${{ inputs.force_full_refresh }}"
+          # Get last successful run time from GitHub API
+          LAST_RUN=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/meta_ads_reporter.yml/runs?status=success&per_page=1" \
+            | jq -r '.workflow_runs[0].created_at // empty')
           
-          # Check if required secrets are set (without exposing values)
-          [ -n "$META_ACCESS_TOKEN" ] && echo "✅ META_ACCESS_TOKEN is set" || \
-            (echo "❌ META_ACCESS_TOKEN is missing" && exit 1)
-          [ -n "$SPREADSHEET_ID" ] && echo "✅ SPREADSHEET_ID is set" || \
-            (echo "❌ SPREADSHEET_ID is missing" && exit 1)
-        env:
-          GOOGLE_APPLICATION_CREDENTIALS: service-account.json
-          META_ACCESS_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
-          SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
-          TZ: Asia/Kolkata
+          if [ -n "$LAST_RUN" ]; then
+            HOURS_SINCE=$(( ($(date +%s) - $(date -d "$LAST_RUN" +%s)) / 3600 ))
+            echo "hours_missed=$((HOURS_SINCE - 1))" >> $GITHUB_OUTPUT
+            echo "📊 Last successful run: $LAST_RUN"
+            echo "⏰ Hours since last run: $HOURS_SINCE"
+          else
+            echo "hours_missed=0" >> $GITHUB_OUTPUT
+            echo "📊 No previous runs found"
+          fi
       
-      - name: Run meta_ads_reporter.py
+      - name: Run with catchup
         env:
           GOOGLE_APPLICATION_CREDENTIALS: service-account.json
           META_ACCESS_TOKEN: ${{ secrets.META_ACCESS_TOKEN }}
           SPREADSHEET_ID: ${{ secrets.SPREADSHEET_ID }}
-          FORCE_REFRESH: ${{ inputs.force_full_refresh }}
+          CATCHUP_HOURS: ${{ inputs.catchup_hours || steps.catchup.outputs.hours_missed }}
           TZ: Asia/Kolkata
-          PYTHONUNBUFFERED: "1"  # Force unbuffered output for real-time logs
+          PYTHONUNBUFFERED: "1"
         run: |
           echo "=============================================="
           echo "🚀 META ADS REPORTER - HOURLY UPDATE"
@@ -100,62 +82,35 @@ jobs:
           echo "📅 Date: $(TZ=Asia/Kolkata date '+%Y-%m-%d')"
           echo "🕐 Time (IST): $(TZ=Asia/Kolkata date '+%H:%M:%S %Z')"
           echo "🕐 Time (UTC): $(date -u '+%H:%M:%S %Z')"
-          echo "📊 Run: #${{ github.run_number }} (Attempt: ${{ github.run_attempt }})"
-          echo "🔄 Mode: ${{ inputs.force_full_refresh == true && 'FULL REFRESH' || 'INCREMENTAL' }}"
-          echo "=============================================="
-          echo ""
+          echo "📊 Run: #${{ github.run_number }}"
           
-          # Run with timeout and capture exit code
-          timeout 600 python meta_ads_reporter.py || EXIT_CODE=$?
-          
-          if [ ${EXIT_CODE:-0} -eq 124 ]; then
-            echo "⚠️  Script timed out after 10 minutes"
-            exit 1
-          elif [ ${EXIT_CODE:-0} -ne 0 ]; then
-            echo "❌ Script failed with exit code: ${EXIT_CODE}"
-            exit ${EXIT_CODE}
+          if [ "${CATCHUP_HOURS:-0}" -gt 0 ]; then
+            echo "🔄 CATCHUP MODE: Processing $CATCHUP_HOURS missed hour(s)"
+          else
+            echo "✅ NORMAL MODE: Current hour only"
           fi
           
+          echo "=============================================="
+          echo ""
+          
+          python meta_ads_reporter.py
+          
           echo ""
           echo "=============================================="
-          echo "✅ HOURLY UPDATE COMPLETED"
+          echo "✅ UPDATE COMPLETED"
           echo "🕐 Finished (IST): $(TZ=Asia/Kolkata date '+%H:%M:%S %Z')"
-          echo "⏱️  Duration: $SECONDS seconds"
-          echo "📊 Sheets updated: Hourly Data & Daily Sales Report"
           echo "=============================================="
       
       - name: Cleanup credentials
         if: always()
-        run: |
-          rm -f service-account.json
-          echo "🧹 Credentials cleaned up"
+        run: rm -f service-account.json
       
       - name: Upload logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: error-logs-${{ github.run_id }}-${{ github.run_attempt }}
+          name: error-logs-${{ github.run_id }}
           path: |
             *.log
             *.txt
-            *.err
           retention-days: 7
-          if-no-files-found: ignore
-      
-      - name: Notify on failure
-        if: failure()
-        run: |
-          echo "=============================================="
-          echo "❌ WORKFLOW FAILED"
-          echo "=============================================="
-          echo "📊 Run ID: ${{ github.run_id }}"
-          echo "🔗 URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          echo "💡 Check uploaded artifacts for detailed logs"
-          echo "=============================================="
-      
-      # Optional: Add success metrics
-      - name: Report success
-        if: success()
-        run: |
-          echo "✅ Workflow completed successfully"
-          echo "📈 Next run scheduled in 1 hour (at :00 minute mark)"
