@@ -2,6 +2,7 @@
 # Designed for GitHub Actions hourly cron job execution
 # NEW: Automatically detects and processes missed hours
 # FIXED: Robust duplicate prevention using hour-based comparison
+# FIXED v2: Catchup hours now use target_hour as timestamp (prevents all catchup rows overwriting same row)
 
 import sys
 import os
@@ -67,6 +68,9 @@ class Config:
     # Catchup configuration
     MAX_CATCHUP_HOURS = 24
     ENABLE_AUTO_CATCHUP = True
+    
+    # If current run is more than this many seconds after target_hour, treat as catchup
+    CATCHUP_THRESHOLD_SECONDS = 300  # 5 minutes
 
 # ============================================
 # LOGGING
@@ -412,12 +416,30 @@ class MetricsProcessor:
 
     @staticmethod
     def create_hourly_report(metrics: Dict, target_hour: datetime) -> pd.DataFrame:
-        """Create hourly report with actual runtime timestamp"""
-        # Use current time instead of rounded hour
+        """
+        Create hourly report.
+        
+        FIX v2: Use target_hour as the report timestamp instead of wall-clock time.
+        Previously, all catchup rows used datetime.now() which collapsed to the same
+        hour key (e.g. 18:00), causing every catchup row to overwrite row 2498.
+        Now each hour gets its own distinct timestamp, so deduplication works correctly.
+        
+        - For catchup hours (target_hour is >5 min in the past): timestamp = target_hour
+        - For the current hour (running on schedule): timestamp = actual runtime (wall clock)
+          so the sheet reflects when the data was actually fetched.
+        """
         actual_time = datetime.now(Config.IST)
+        is_catchup = (actual_time - target_hour).total_seconds() > Config.CATCHUP_THRESHOLD_SECONDS
+        report_time = target_hour if is_catchup else actual_time
+
+        if is_catchup:
+            logger.info(f"📝 Catchup row — using target_hour as timestamp: {report_time.strftime('%m/%d/%Y %H:%M:%S')}")
+        else:
+            logger.info(f"📝 Current-hour row — using actual runtime: {report_time.strftime('%m/%d/%Y %H:%M:%S')}")
+
         return pd.DataFrame([{
-            'Date': actual_time.strftime('%m/%d/%Y'),
-            'Timestamp': actual_time.strftime('%m/%d/%Y %H:%M:%S'),
+            'Date': report_time.strftime('%m/%d/%Y'),
+            'Timestamp': report_time.strftime('%m/%d/%Y %H:%M:%S'),
             'Spend': f"₹{round(metrics['Spend'],2)}",
             'Purchases Value': f"₹{round(metrics['Purchases Value'],2)}",
             'Purchases': metrics['Purchases'],
@@ -510,7 +532,7 @@ class MetaAdsTracker:
         return True
 
     def run(self) -> bool:
-        logger.info("🚀 META ADS TRACKER STARTED (WITH DUPLICATE FIX)")
+        logger.info("🚀 META ADS TRACKER STARTED (WITH DUPLICATE FIX v2)")
         logger.info(f"📅 Current time: {datetime.now(Config.IST).strftime('%Y-%m-%d %H:%M:%S IST')}")
         
         sheets_ok = self.sheets_manager.setup()
