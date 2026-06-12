@@ -49,7 +49,8 @@ class Config:
     ACCESS_TOKEN = os.environ.get('META_ACCESS_TOKEN', "")
     AD_ACCOUNT_IDS = [
         "act_1820431671907314",
-        "act_24539675529051798"
+        "act_24539675529051798",
+        "act_1354643549893186"
     ]
     API_VERSION = "v21.0"
     SPREADSHEET_ID = os.environ.get('SPREADSHEET_ID', "1Ka_DkNGCVi2h_plNN55-ZETW7M9MmFpTHocE7LZcYEM")
