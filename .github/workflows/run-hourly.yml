@@ -2,10 +2,8 @@ name: Meta Ads Reporter - Hourly (Self-Healing)
 
 on:
   schedule:
-    # Primary: Every hour at minute 0
-    - cron: "0 * * * *"
-    # Backup: Every hour at minute 30 (catches missed runs)
-    - cron: "30 * * * *"
+    # Run every hour at minute 0
+    - cron: "55 * * * *"
   
   workflow_dispatch:
     inputs:
