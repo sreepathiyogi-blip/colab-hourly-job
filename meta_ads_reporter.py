@@ -139,7 +139,7 @@ class GoogleSheetsManager:
         for fmt in formats:
             try:
                 dt = datetime.strptime(timestamp_str.strip(), fmt)
-                return dt.strftime('%m/%d/%Y %H:00')
+                return dt.strftime('%m/%d/%Y %I:00 %p')
             except ValueError:
                 continue
 
@@ -148,7 +148,10 @@ class GoogleSheetsManager:
             if len(parts) >= 2:
                 date_part = parts[0]
                 time_part = parts[1].split(':')[0]
-                return f"{date_part} {time_part}:00"
+                hour = int(time_part)
+                period = 'AM' if hour < 12 else 'PM'
+                hour_12 = hour % 12 or 12
+                return f"{date_part} {hour_12:02d}:00 {period}"
         except:
             pass
 
@@ -308,7 +311,7 @@ class MetricsProcessor:
         now = datetime.now(Config.IST)
         return pd.DataFrame([{
             'Date': now.strftime('%m/%d/%Y'),
-            'Timestamp': now.strftime('%m/%d/%Y %H:%M:%S'),
+            'Timestamp': now.strftime('%m/%d/%Y %I:%M:%S %p'),
             'Spend': f"₹{round(metrics['Spend'],2)}",
             'Purchases Value': f"₹{round(metrics['Purchases Value'],2)}",
             'Purchases': metrics['Purchases'],
