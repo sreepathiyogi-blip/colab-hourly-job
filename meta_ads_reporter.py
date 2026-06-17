@@ -64,12 +64,6 @@ class Config:
     RETRY_DELAY = 5
     COMMON_FIELDS = "date_start,date_stop,impressions,clicks,spend,actions,action_values,cpm,cpc,ctr"
 
-    # ⚠️  CATCHUP IS INTENTIONALLY DISABLED
-    # Meta's API only supports date_preset='today' — it returns the current running
-    # total, NOT what the numbers were at a specific past hour.
-    # Enabling catchup would stamp today's total onto every missed hour label,
-    # producing rows that look like real hourly data but are completely fabricated.
-    # If hours are missed, accept the gap. Do not backfill.
     ENABLE_AUTO_CATCHUP = False
 
 # ============================================
@@ -124,16 +118,17 @@ class GoogleSheetsManager:
             self.spreadsheet.add_worksheet(title=Config.HOURLY_WORKSHEET, rows=20000, cols=50)
 
     def _parse_timestamp_to_hour(self, timestamp_str: str) -> Optional[str]:
-        """Parse timestamp and return normalized hour string (MM/DD/YYYY HH:00)"""
+        """Parse timestamp and return normalized hour string"""
         if not timestamp_str or not timestamp_str.strip():
             return None
 
         formats = [
+            '%m/%d/%Y %I:%M:%S %p',
+            '%m/%d/%Y %I:%M %p',
             '%m/%d/%Y %H:%M:%S',
             '%Y-%m-%d %H:%M:%S',
             '%m/%d/%Y %H:%M',
             '%Y-%m-%d %H:%M',
-            '%m/%d/%Y %H',
         ]
 
         for fmt in formats:
@@ -147,8 +142,7 @@ class GoogleSheetsManager:
             parts = timestamp_str.strip().split()
             if len(parts) >= 2:
                 date_part = parts[0]
-                time_part = parts[1].split(':')[0]
-                hour = int(time_part)
+                hour = int(parts[1].split(':')[0])
                 period = 'AM' if hour < 12 else 'PM'
                 hour_12 = hour % 12 or 12
                 return f"{date_part} {hour_12:02d}:00 {period}"
@@ -163,17 +157,12 @@ class GoogleSheetsManager:
             ws = self.spreadsheet.worksheet(Config.HOURLY_WORKSHEET)
             existing = ws.get_all_values()
             row = len(existing) + 1
-            timestamp = datetime.now(Config.IST).strftime('%m/%d/%Y %H:%M:%S')
+            timestamp = datetime.now(Config.IST).strftime('%m/%d/%Y %I:%M:%S %p')
             ws.update(values=[[f"❌ Error at {timestamp}: {error_message}"]], range_name=f"A{row}")
         except Exception as e:
             logger.error(f"Failed to write error to sheet: {e}")
 
     def update_hourly(self, df: pd.DataFrame) -> bool:
-        """
-        Update hourly sheet.
-        - If a row for this hour already exists (e.g. script ran twice in same hour), replace it.
-        - Otherwise append a new row.
-        """
         try:
             ws = self.spreadsheet.worksheet(Config.HOURLY_WORKSHEET)
             existing = ws.get_all_values()
@@ -256,7 +245,6 @@ class MetaAPIClient:
         return results
 
     def fetch_ad_insights(self, account_id: str) -> List[Dict]:
-        """Fetch account-level insights for today (running total)."""
         url = f"{self.base}/{account_id}/insights"
         params = {
             'access_token': self.access_token,
@@ -307,11 +295,12 @@ class MetricsProcessor:
 
     @staticmethod
     def create_hourly_report(metrics: Dict) -> pd.DataFrame:
-        """Create hourly report stamped with actual current time."""
+        """Create hourly report stamped with next clean hour in IST."""
         now = datetime.now(Config.IST)
+        next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
         return pd.DataFrame([{
-            'Date': now.strftime('%m/%d/%Y'),
-            'Timestamp': now.strftime('%m/%d/%Y %I:%M:%S %p'),
+            'Date': next_hour.strftime('%m/%d/%Y'),
+            'Timestamp': next_hour.strftime('%m/%d/%Y %I:00 %p'),
             'Spend': f"₹{round(metrics['Spend'],2)}",
             'Purchases Value': f"₹{round(metrics['Purchases Value'],2)}",
             'Purchases': metrics['Purchases'],
@@ -343,8 +332,6 @@ class MetaAdsTracker:
         logger.info("🚀 META ADS TRACKER STARTED")
         logger.info(f"📅 Current time: {datetime.now(Config.IST).strftime('%Y-%m-%d %H:%M:%S IST')}")
         logger.info("ℹ️  Mode: Single hourly snapshot (catchup disabled)")
-        logger.info("ℹ️  Reason: Meta API returns today's running total only — backfilling past hours")
-        logger.info("            would write today's numbers onto historical hour labels (fake data).")
 
         sheets_ok = self.sheets_manager.setup()
 
@@ -352,7 +339,6 @@ class MetaAdsTracker:
             token = input('Enter Meta ACCESS TOKEN (or set META_ACCESS_TOKEN env): ').strip()
             self.api_client.access_token = token
 
-        # Fetch from all accounts
         all_ad_items = []
         for acct in Config.AD_ACCOUNT_IDS:
             items = self.api_client.fetch_ad_insights(acct)
@@ -363,7 +349,6 @@ class MetaAdsTracker:
             logger.warning('⚠️  No data returned from Meta API')
             return False
 
-        # Aggregate metrics
         metrics = {
             'Spend': 0.0,
             'Purchases Value': 0.0,
@@ -386,7 +371,6 @@ class MetaAdsTracker:
             metrics['Purchases'] += acts.get('purchases', 0)
             metrics['Purchases Value'] += MetricsProcessor.extract_purchase_value(it)
 
-        # Derived metrics
         metrics['ROAS'] = metrics['Purchases Value'] / metrics['Spend'] if metrics['Spend'] > 0 else 0
         metrics['CPC'] = metrics['Spend'] / metrics['Link Clicks'] if metrics['Link Clicks'] > 0 else 0
         metrics['CPM'] = (metrics['Spend'] / metrics['Impressions']) * 1000 if metrics['Impressions'] > 0 else 0
@@ -397,7 +381,6 @@ class MetaAdsTracker:
         metrics['CI TO ORDERED'] = (metrics['Purchases'] / metrics['Initiate Checkout']) * 100 if metrics['Initiate Checkout'] > 0 else 0
         metrics['CVR'] = (metrics['Purchases'] / metrics['Link Clicks']) * 100 if metrics['Link Clicks'] > 0 else 0
 
-        # Log summary
         logger.info(f"\n📊 TODAY'S SNAPSHOT:")
         logger.info(f"   Spend:           ₹{round(metrics['Spend'], 2)}")
         logger.info(f"   Purchases Value: ₹{round(metrics['Purchases Value'], 2)}")
@@ -405,7 +388,6 @@ class MetaAdsTracker:
         logger.info(f"   ROAS:            {round(metrics['ROAS'], 2)}")
         logger.info(f"   Impressions:     {metrics['Impressions']}")
 
-        # Write to sheet
         hourly_df = MetricsProcessor.create_hourly_report(metrics)
 
         if sheets_ok:
