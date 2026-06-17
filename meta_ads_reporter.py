@@ -295,12 +295,11 @@ class MetricsProcessor:
 
     @staticmethod
     def create_hourly_report(metrics: Dict) -> pd.DataFrame:
-        """Create hourly report stamped with next clean hour in IST."""
+        """Create hourly report stamped with current clean hour in IST."""
         now = datetime.now(Config.IST)
-        next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
         return pd.DataFrame([{
-            'Date': next_hour.strftime('%m/%d/%Y'),
-            'Timestamp': next_hour.strftime('%m/%d/%Y %I:00 %p'),
+            'Date': now.strftime('%m/%d/%Y'),
+            'Timestamp': now.strftime('%m/%d/%Y %I:00 %p'),
             'Spend': f"₹{round(metrics['Spend'],2)}",
             'Purchases Value': f"₹{round(metrics['Purchases Value'],2)}",
             'Purchases': metrics['Purchases'],
